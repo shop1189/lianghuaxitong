@@ -23,7 +23,7 @@
 
 - **备份标签**：`restore-pre-phase-b-2026-04-18` → 提交 **`0dfb385`**（进入阶段 B 文档前的快照）  
 - **离线包**：`/root/longxia_backups/longxia_system-restore-pre-phase-b-2026-04-18.tar.gz`  
-- **阶段 B 文档增量**：提交 **`ff616e3`**（`docs/agent/`、`AGENTS.md`、README 互链；Hermes 健康报告版式仍待真人团队）
+- **阶段 B 文档增量**：**`ff616e3`**～**`b849a3b`**（`docs/agent/`、`AGENTS.md`、README 互链与留档；Hermes 健康报告版式仍待真人团队）
 
 ## 4) Hermes 技能包 · 自动入脑（可选 cron）
 
