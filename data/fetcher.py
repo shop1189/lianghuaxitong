@@ -1,4 +1,5 @@
 """数据获取模块：恐惧贪婪等仍走 data_feed；K 线快照走 Gate CCXT 现货（按 symbol）。"""
+import time
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone, timedelta
 
@@ -65,6 +66,9 @@ def _synthetic_snapshot(symbol: str, limit: int) -> Dict[str, Any]:
         "klines": klines,
         "count": len(klines),
         "source": "synthetic_fallback_btc_drift",
+        "fetched_at_ms": int(time.time() * 1000),
+        "klines_fetch_mode": "synthetic",
+        "klines_fetch_build": "synthetic_snapshot",
     }
 
 
@@ -95,6 +99,9 @@ def build_indicator_snapshot(
             "klines": klines,
             "count": len(klines),
             "source": "gateio_ccxt_v316",
+            "fetched_at_ms": int(time.time() * 1000),
+            "klines_fetch_mode": "fetch_ohlcv_recent",
+            "klines_fetch_build": "ccxt_fetch_ohlcv_limit_v2",
         }
     except Exception as e:
         print(f"[data.fetcher] build_indicator_snapshot ccxt failed: {e!r}")

@@ -1,10 +1,13 @@
 """
 实盘 / 决策快照：5m K 与决策页数据（V3.16 Gate.io CCXT）。
 V3.16.5+：高级指标、形态融合、贝叶斯轻量、虚拟单本地写入（修正做空 SL/TP）。
+规则实验轨：sync_experiment_track_from_snapshot — 独立筛选 + 较宽 SL/TP，写入非 virtual_signal；见环境变量 LONGXIA_EXPERIMENT_*。
 """
 from __future__ import annotations
 import html
 import json
+import os
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,6 +59,15 @@ _LAST_BETA_TS = 0.0
 _EVOL_REPORT_PATCHED = False
 _MAIN_PREVIEW_PATCHED = False
 _GET_REPORT_PATCHED = False
+_BG_SCAN_STARTED = False
+_EXPERIMENT_SCAN_SYMBOLS = (
+    "SOL/USDT",
+    "BTC/USDT",
+    "ETH/USDT",
+    "DOGE/USDT",
+    "XRP/USDT",
+    "BNB/USDT",
+)
 def _json_dumps_safe(obj: Any) -> str:
     try:
         return json.dumps(obj, ensure_ascii=False, indent=2)
@@ -481,6 +493,157 @@ def _levels_for_direction(entry: float, direction: str) -> Tuple[float, float, f
     tp1 = e * (1.0 + 0.0012)
     tp2 = e * (1.0 + 0.0045)
     return sl, tp1, tp2, tp2
+
+
+def _experiment_track_enabled() -> bool:
+    v = os.environ.get("LONGXIA_EXPERIMENT_TRACK", "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _experiment_levels_for_direction(
+    entry: float, direction: str
+) -> Tuple[float, float, float, float]:
+    """规则实验轨 SL/TP：默认比主观察池更宽，具体比例可用环境变量再调。"""
+    e = float(entry)
+    sl_pct = float(os.environ.get("LONGXIA_EXPERIMENT_SL_PCT", "0.008"))
+    tp1_pct = float(os.environ.get("LONGXIA_EXPERIMENT_TP1_PCT", "0.004"))
+    tp2_pct = float(os.environ.get("LONGXIA_EXPERIMENT_TP2_PCT", "0.01"))
+    tp3_pct = float(os.environ.get("LONGXIA_EXPERIMENT_TP3_PCT", "0.016"))
+    if direction == "做空":
+        sl = e * (1.0 + sl_pct)
+        tp1 = e * (1.0 - tp1_pct)
+        tp2 = e * (1.0 - tp2_pct)
+        tp3 = e * (1.0 - tp3_pct)
+        return sl, tp1, tp2, tp3
+    sl = e * (1.0 - sl_pct)
+    tp1 = e * (1.0 + tp1_pct)
+    tp2 = e * (1.0 + tp2_pct)
+    tp3 = e * (1.0 + tp3_pct)
+    return sl, tp1, tp2, tp3
+
+
+def _price_levels_self_check(
+    entry: float,
+    direction: str,
+    sl: float,
+    tp1: float,
+    tp2: float,
+    tp3: float,
+) -> bool:
+    try:
+        e, s, a, b, c = (
+            float(entry),
+            float(sl),
+            float(tp1),
+            float(tp2),
+            float(tp3),
+        )
+    except Exception:
+        return False
+    if min(e, s, a, b, c) <= 0:
+        return False
+    if direction == "做多":
+        return s < e < a <= b <= c
+    if direction == "做空":
+        return s > e > a >= b >= c
+    return False
+
+
+def _experiment_entry_filter(km: Dict[str, Any]) -> bool:
+    sig = str(km.get("signal_label") or "")
+    if not (sig.startswith("偏多") or sig.startswith("偏空")):
+        return False
+    try:
+        cs = float(km.get("consistency_score") or 0.0)
+    except Exception:
+        cs = 0.0
+    min_c = float(os.environ.get("LONGXIA_EXPERIMENT_MIN_CONSISTENCY", "0.35"))
+    if abs(cs) < min_c:
+        return False
+    try:
+        post = float(km.get("bayes_posterior_winrate") or 0.0)
+    except Exception:
+        post = 0.0
+    min_b = float(os.environ.get("LONGXIA_EXPERIMENT_MIN_BAYES", "0.45"))
+    if post < min_b:
+        return False
+    return True
+
+
+def sync_experiment_track_from_snapshot(
+    symbol: str, px: float, km: Dict[str, Any]
+) -> None:
+    """规则实验轨：与主观察池共用快照；先 tick 再按筛选开仓（非 virtual_signal）。"""
+    if not _experiment_track_enabled():
+        return
+    try:
+        from evolution_core import ai_evo
+    except Exception:
+        return
+    try:
+        pxf = float(px)
+    except Exception:
+        return
+    if pxf <= 0:
+        return
+    sym = str(symbol or "").strip()
+    if not sym:
+        return
+    if not _experiment_entry_filter(km):
+        return
+    sig = str(km.get("signal_label") or "")
+    if sig.startswith("偏多"):
+        direction = "做多"
+    elif sig.startswith("偏空"):
+        direction = "做空"
+    else:
+        return
+    try:
+        entry = float(km.get("entry_price") or pxf)
+    except Exception:
+        entry = pxf
+    sl, tp1, tp2, tp3 = _experiment_levels_for_direction(entry, direction)
+    if not _price_levels_self_check(entry, direction, sl, tp1, tp2, tp3):
+        return
+    ai_evo.tick(pxf, sym)
+    for t in ai_evo.memory.open_trades:
+        if str(t.get("symbol") or "").strip() == sym:
+            return
+    ai_evo.record(direction, entry, sl, tp1, tp2, tp3, symbol=sym)
+
+
+def _background_scan_all_symbols_once() -> None:
+    for sym in _EXPERIMENT_SCAN_SYMBOLS:
+        try:
+            px = float(_fetch_current_ticker_price_sync(sym))
+            if px <= 0:
+                continue
+            km = get_v313_decision_snapshot(force_refresh=True, symbol=sym)
+            sync_virtual_memos_from_state(sym, px)
+            sync_experiment_track_from_snapshot(sym, px, km)
+        except Exception:
+            continue
+
+
+def _start_background_scan_thread_if_needed() -> None:
+    global _BG_SCAN_STARTED
+    if _BG_SCAN_STARTED:
+        return
+    _BG_SCAN_STARTED = True
+    interval = float(os.environ.get("LONGXIA_EXPERIMENT_SCAN_INTERVAL_SEC", "60"))
+
+    def _loop() -> None:
+        time.sleep(3.0)
+        while True:
+            try:
+                _background_scan_all_symbols_once()
+            except Exception:
+                pass
+            time.sleep(max(15.0, interval))
+
+    threading.Thread(target=_loop, daemon=True).start()
+
+
 def _append_virtual_trade_memory_local(
     symbol: str, entry: float, direction_label: str, last_sig: int
 ) -> None:
@@ -697,6 +860,9 @@ def get_v313_decision_snapshot(
             "count": snap.get("count"),
             "source": snap.get("source"),
             "last_close": snap.get("last_close"),
+            "fetched_at_ms": snap.get("fetched_at_ms"),
+            "klines_fetch_mode": snap.get("klines_fetch_mode"),
+            "klines_fetch_build": snap.get("klines_fetch_build"),
         },
         "candle_5m": _fetch_latest_5m_candle(symbol),
         "advanced_indicators": adv,
@@ -764,6 +930,7 @@ def sync_virtual_memos_from_state(symbol: str, entry_price: float) -> None:
 def start_live_bot_background() -> None:
     ensure_trading_theory_library()
     _ensure_memos_hotfixes()
+    _start_background_scan_thread_if_needed()
 
 
 import sys

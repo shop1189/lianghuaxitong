@@ -51,10 +51,23 @@ class TradeMemory:
             else:
                 json.dump(target, f, ensure_ascii=False, indent=2)
 
-    def add_open_trade(self, direction, entry, sl, tp1, tp2, tp3):
-        for t in self.open_trades:
-            if abs(t["entry"] - entry) < 1:
-                return
+    def add_open_trade(
+        self, direction, entry, sl, tp1, tp2, tp3, symbol: str = ""
+    ) -> None:
+        """开仓；direction 仅接受 做多/做空。带 symbol 时每币种最多一笔未平仓（实验轨多币种）。"""
+        if direction not in ("做多", "做空"):
+            return
+        sym = str(symbol or "").strip()
+        if sym:
+            for t in self.open_trades:
+                if str(t.get("symbol") or "").strip() == sym:
+                    return
+        else:
+            for t in self.open_trades:
+                if str(t.get("symbol") or "").strip():
+                    continue
+                if abs(float(t["entry"]) - float(entry)) < 1:
+                    return
         self.open_trades.append({
             "direction": direction,
             "entry": entry,
@@ -62,13 +75,22 @@ class TradeMemory:
             "tp1": tp1,
             "tp2": tp2,
             "tp3": tp3,
-            "entry_time": time.time()
+            "symbol": sym,
+            "entry_time": time.time(),
         })
 
-    def check_close_trade(self, current_price):
+    def check_close_trade(self, current_price, symbol: Optional[str] = None):
+        """symbol 为 None 时仅撮合「无 symbol」的遗留单；否则只撮合该币种。"""
         profit = None
         idx = None
+        filt = None if symbol is None else str(symbol).strip()
         for i, t in enumerate(self.open_trades):
+            ts = str(t.get("symbol") or "").strip()
+            if filt is None:
+                if ts != "":
+                    continue
+            elif ts != filt:
+                continue
             d, entry, sl, tp1, tp2, tp3 = t["direction"], t["entry"], t["sl"], t["tp1"], t["tp2"], t["tp3"]
             if d == "做多":
                 if current_price <= sl:
@@ -106,19 +128,23 @@ class TradeMemory:
         today = datetime.now(_BJ).strftime("%Y-%m-%d")
         entry_u = datetime.fromtimestamp(trade["entry_time"], tz=timezone.utc)
         close_u = datetime.now(timezone.utc)
+        sym = str(trade.get("symbol") or "").strip()
+        rp = 6 if sym else 2
         record = {
             "date": today,
             "entry_time": entry_u.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "close_time": close_u.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "direction": trade["direction"],
-            "entry": round(trade["entry"], 2),
-            "sl": round(trade["sl"], 2),
-            "tp1": round(trade["tp1"], 2),
-            "tp2": round(trade["tp2"], 2),
-            "tp3": round(trade["tp3"], 2),
-            "close": round(close_price, 2),
-            "profit": round(profit, 2)
+            "entry": round(trade["entry"], rp),
+            "sl": round(trade["sl"], rp),
+            "tp1": round(trade["tp1"], rp),
+            "tp2": round(trade["tp2"], rp),
+            "tp3": round(trade["tp3"], rp),
+            "close": round(close_price, rp),
+            "profit": round(profit, 2),
         }
+        if sym:
+            record["symbol"] = sym
         self.data.append(record)
         self._save()
 
@@ -224,11 +250,21 @@ class AIAutoEvolution:
         self.memory = TradeMemory()
         self.analyzer = StrategyAnalyzer(self.memory)
 
-    def record(self, direction, entry, sl, tp1, tp2, tp3):
-        self.memory.add_open_trade(direction, entry, sl, tp1, tp2, tp3)
+    def record(
+        self,
+        direction,
+        entry,
+        sl,
+        tp1,
+        tp2,
+        tp3,
+        *,
+        symbol: str = "",
+    ):
+        self.memory.add_open_trade(direction, entry, sl, tp1, tp2, tp3, symbol=symbol)
 
-    def tick(self, price):
-        self.memory.check_close_trade(price)
+    def tick(self, price, symbol: Optional[str] = None):
+        self.memory.check_close_trade(price, symbol)
 
     def report(self):
         return self.analyzer.get_report()
@@ -251,7 +287,11 @@ class AIAutoEvolution:
                 p = o["profit"]
                 res = "✅盈利" if p > 0 else "❌亏损"
                 p_str = f"+{p}" if p > 0 else f"{p}"
-                print(f"#{idx+1} | {o['entry_time']} | {o['direction']} | 入场:{o['entry']} | 止损:{o['sl']} | 平仓:{o['close']} | {res} {p_str}%")
+                sym = f"{o.get('symbol')}|" if o.get("symbol") else ""
+                print(
+                    f"#{idx+1} | {sym}{o['entry_time']} | {o['direction']} | "
+                    f"入场:{o['entry']} | 止损:{o['sl']} | 平仓:{o['close']} | {res} {p_str}%"
+                )
         print("-" * 82 + "\n")
 
 ai_evo = AIAutoEvolution()

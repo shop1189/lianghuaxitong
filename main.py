@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import html
 import json
+from typing import Optional
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from data_fetcher import fetch_current_ticker_price, log_v316_engine_ready
+from data_fetcher import fetch_current_ticker_price, fetch_ticker, log_v316_engine_ready
 
 log_v316_engine_ready()
 
@@ -25,6 +26,7 @@ from beijing_time import utc_ms_to_bj_str
 from live_trading import (
     _trade_memory_parse,
     get_v313_decision_snapshot,
+    sync_experiment_track_from_snapshot,
     sync_virtual_memos_from_state,
 )
 
@@ -539,6 +541,98 @@ def _fmt_backtest_price(v: object) -> str:
         return "—"
 
 
+def _extract_ccxt_ticker_time_bj(tinfo: object, snap: dict) -> str:
+    """Gate/CCXT 部分行情不返回 ticker 时间戳；尽量多字段解析，否则用 K 线拉取时刻作参考。"""
+    if not isinstance(snap, dict):
+        snap = {}
+    if not isinstance(tinfo, dict):
+        tinfo = {}
+    ts_ms: Optional[int] = None
+    ts = tinfo.get("timestamp")
+    if ts is not None:
+        try:
+            ts_ms = int(float(ts))
+            if ts_ms < 10**11:
+                ts_ms *= 1000
+        except Exception:
+            ts_ms = None
+    if ts_ms is None and tinfo.get("datetime") is not None:
+        try:
+            d = tinfo.get("datetime")
+            ts_ms = int(float(d))
+            if ts_ms < 10**11:
+                ts_ms *= 1000
+        except Exception:
+            ts_ms = None
+    info = tinfo.get("info")
+    if ts_ms is None and isinstance(info, dict):
+        for k in ("update_time", "timestamp", "time", "ts", "t", "last"):
+            v = info.get(k)
+            if v is None:
+                continue
+            try:
+                cand = int(float(v))
+                if cand < 10**11:
+                    cand *= 1000
+                if cand > 0:
+                    ts_ms = cand
+                    break
+            except Exception:
+                continue
+    if ts_ms is not None and ts_ms > 0:
+        return utc_ms_to_bj_str(ts_ms)
+    ref = snap.get("fetched_at_ms")
+    if ref is not None:
+        try:
+            rms = int(ref)
+            if rms > 0:
+                return (
+                    "参考：本页 K 线拉取时刻 "
+                    f"{utc_ms_to_bj_str(rms)}"
+                    "；交易所 ticker 未返回报价时间戳"
+                )
+        except Exception:
+            pass
+    klines = snap.get("klines") or []
+    last_k = klines[-1] if klines else {}
+    last_ms = int(last_k.get("time") or 0)
+    if last_ms > 0:
+        return (
+            "参考：本页 K 线拉取时刻 "
+            f"{utc_ms_to_bj_str(last_ms)}"
+            "（以最后一根 K 线时间近似；交易所 ticker 未返回报价时间戳）"
+        )
+    return (
+        f"本决策计算时间 {datetime.now(_BJ).strftime('%Y-%m-%d %H:%M:%S')} "
+        "（ticker 与 K 线均无可用时间戳）"
+    )
+
+
+def _fmt_klines_impl_line(snap: dict, meta: dict) -> str:
+    """将内部模式名转为可读中文，并保留内部版本号便于排查。"""
+    m = {**(meta or {}), **(snap or {})}
+    mode = str(m.get("klines_fetch_mode") or "").strip()
+    build = str(m.get("klines_fetch_build") or "").strip()
+    src = str(m.get("source") or "—")
+    cnt = m.get("count")
+    n_str = str(cnt) if cnt is not None else "—"
+    if mode == "fetch_ohlcv_recent" and build == "ccxt_fetch_ohlcv_limit_v2":
+        return (
+            f"单次拉取最近 {n_str} 根 1m K 线（单次上限 1000 根）"
+            f" · 内部版本 {build} · 数据源 {src}"
+        )
+    if mode == "synthetic":
+        return f"合成兜底 K 线（演示用）· {build} · 根数 {n_str}"
+    parts: list[str] = []
+    if mode:
+        parts.append(f"模式 {mode}")
+    if build:
+        parts.append(f"内部版本 {build}")
+    if parts:
+        return f"{' · '.join(parts)} · 根数 {n_str} · 数据源 {src}"
+    return f"单次拉取最近 {n_str} 根 · 数据源 {src}"
+
+
 def _build_v314_signal_block(
     sym: str,
     km: dict,
@@ -614,7 +708,7 @@ def _build_v314_signal_block(
 <p>{ln_tp1}</p>
 <p>{ln_tp2}</p>
 <p>今日规则信号次数：{sig_n}（按新出现的信号K线去重累计）</p>
-<p>弱量/里趋势过：已关闭(EXPERIENCE WEAK VOL RATIO=0)</p>
+<p>弱量过滤：已关闭（弱量比阈值=0，与回测一致）</p>
 <p class="v314-ts">{html.escape(ts_footer)}</p>
 </div>"""
     return body
@@ -771,10 +865,18 @@ async def page_decision(symbol: str = Query("SOL/USDT")):
         live_ticker = await fetch_current_ticker_price(sym)
     except Exception:
         live_ticker = None
+    tinfo: dict = {}
+    try:
+        tinfo = fetch_ticker(sym)
+    except Exception:
+        tinfo = {}
+    ticker_quote_bj = _extract_ccxt_ticker_time_bj(tinfo, snap)
     px_for_memos = live_ticker if live_ticker is not None else last_close
     try:
         if px_for_memos is not None:
-            sync_virtual_memos_from_state(sym, float(px_for_memos))
+            pxf = float(px_for_memos)
+            sync_virtual_memos_from_state(sym, pxf)
+            sync_experiment_track_from_snapshot(sym, pxf, km)
     except Exception:
         pass
     klines = snap.get("klines") or []
@@ -790,6 +892,7 @@ async def page_decision(symbol: str = Query("SOL/USDT")):
     nav_html = "\n".join(nav_links)
     qsym = quote(sym, safe="")
     meta = km.get("indicator_snapshot_meta") or {}
+    klines_impl_line = _fmt_klines_impl_line(snap, meta)
     evo_html = _evolution_block()
     v314_signal_html = _build_v314_signal_block(
         sym, km, snap, meta, klines, last_k, state
@@ -963,6 +1066,8 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <tr><td>决策依据 · 5m K线快照</td><td>{html.escape(json_dumps_safe(km.get("candle_5m") or {}))}</td></tr>
 <tr><td>趋势状态</td><td>{html.escape(_zh_decision_copy(km.get("trend_status")))}</td></tr>
 <tr><td>执行状态 · 信号转单同步</td><td>{html.escape(str(km.get("virtual_order_status", "—")))}</td></tr>
+<tr><td>数据新鲜度 · Gate 现货 ticker 报价时间（北京）</td><td>{html.escape(ticker_quote_bj)}</td></tr>
+<tr><td>K 线拉取实现</td><td>{html.escape(klines_impl_line)}</td></tr>
 </table></div>
 
 <div class="card green">

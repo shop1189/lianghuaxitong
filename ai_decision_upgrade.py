@@ -261,7 +261,7 @@ def ai_analysis_multi_timeframe():
     else:
         last_signal["direction"] = current_dir
         last_signal["timestamp"] = now
-    ai_evo.tick(price)
+    ai_evo.tick(price, None)
     # 输出不变
     if current_dir == "做多":
         decision = "🟢 做多 ✅"
