@@ -29,6 +29,7 @@ def _run_one(
     max_hold_bars: int,
     require_strong: bool,
     markov_template: str,
+    use_markov_threshold_template: bool,
     out_dir: Path,
     prefix: str,
 ) -> Path:
@@ -57,13 +58,16 @@ def _run_one(
         cmd.append("--require-strong")
     if level_mode == "experiment":
         cmd.extend(["--markov-template", markov_template])
+        if use_markov_threshold_template:
+            cmd.append("--use-markov-threshold-template")
     subprocess.run(cmd, cwd=str(_REPO), check=True)
     mtag = (
         ""
         if (level_mode != "experiment" or markov_template == "off")
         else f"_mt{markov_template}"
     )
-    stem = f"{prefix}_{symbol.replace('/', '-')}_{level_mode}_cd{entry_cooldown}{mtag}"
+    mtpl = "_mtpl1" if (level_mode == "experiment" and use_markov_threshold_template) else ""
+    stem = f"{prefix}_{symbol.replace('/', '-')}_{level_mode}_cd{entry_cooldown}{mtag}{mtpl}"
     return out_dir / f"{stem}_summary.json"
 
 
@@ -202,12 +206,69 @@ def _build_report(rows: List[Dict[str, Any]], min_trades: int) -> Dict[str, Any]
         reverse=True,
     )[:24]
 
+    markov_optimized_vs_old: List[Dict[str, Any]] = []
+    markov_optimized_compare_text = ""
+    by_pair: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+    for r in rows:
+        if str(r.get("level_mode") or "") != "experiment":
+            continue
+        key = (
+            r.get("symbol"),
+            r.get("timeframe"),
+            r.get("limit"),
+            r.get("entry_cooldown_bars"),
+            r.get("max_hold_bars"),
+            r.get("require_strong"),
+            str(r.get("markov_template") or "off"),
+        )
+        use_t = bool(r.get("use_markov_threshold_template"))
+        slot = by_pair.setdefault(key, {})
+        slot["on" if use_t else "off"] = r
+
+    lines: List[str] = []
+    for key, g in by_pair.items():
+        o = g.get("off")
+        n = g.get("on")
+        if not o or not n:
+            continue
+        markov_optimized_vs_old.append(
+            {
+                "symbol": key[0],
+                "markov_template": key[6],
+                "off_total_trades": o.get("total_trades"),
+                "on_total_trades": n.get("total_trades"),
+                "off_win_rate_net_pct": o.get("win_rate_net_pct"),
+                "on_win_rate_net_pct": n.get("win_rate_net_pct"),
+                "off_sum_net_profit_pct": o.get("sum_net_profit_pct"),
+                "on_sum_net_profit_pct": n.get("sum_net_profit_pct"),
+                "off_max_drawdown_net_pct": o.get("max_drawdown_net_pct"),
+                "on_max_drawdown_net_pct": n.get("max_drawdown_net_pct"),
+                "off_sharpe_net": o.get("sharpe_net"),
+                "on_sharpe_net": n.get("sharpe_net"),
+            }
+        )
+        lines.append(
+            f"{key[0]}（{key[6]}）策略层模板关：笔数{o.get('total_trades')} "
+            f"净胜率{o.get('win_rate_net_pct')}% 合计净{o.get('sum_net_profit_pct')}% "
+            f"回撤{o.get('max_drawdown_net_pct')}% Sharpe{o.get('sharpe_net')} → "
+            f"开：笔数{n.get('total_trades')} 净胜率{n.get('win_rate_net_pct')}% "
+            f"合计净{n.get('sum_net_profit_pct')}% 回撤{n.get('max_drawdown_net_pct')}% Sharpe{n.get('sharpe_net')}"
+        )
+    if lines:
+        markov_optimized_compare_text = "新旧规则（策略层 Markov 阈值模板）对比摘要：" + "；".join(lines[:16])
+    else:
+        markov_optimized_compare_text = (
+            "新旧规则对比：无成对样本。请使用 --also-threshold-template-compare 生成关/开各一组 experiment。"
+        )
+
     return {
         "mode_summary": mode_summary,
         "template_summary": template_summary,
         "best_by_symbol": best_by_symbol,
         "exp_vs_main_same_setting": exp_vs_main,
         "top_candidates": top_candidates,
+        "markov_optimized_vs_old": markov_optimized_vs_old,
+        "markov_optimized_compare_text": markov_optimized_compare_text,
     }
 
 
@@ -287,6 +348,11 @@ def main() -> None:
         help="逗号分隔；仅对 experiment 展开；main 始终单次。默认 off=每组合只跑一套实验轨；"
         "与旧矩阵口径接近时可仅填 off",
     )
+    p.add_argument(
+        "--also-threshold-template-compare",
+        action="store_true",
+        help="每个 experiment 组合额外再跑一遍 --use-markov-threshold-template，用于报告内新旧规则对比",
+    )
     args = p.parse_args()
 
     prefix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -302,6 +368,7 @@ def main() -> None:
         markov_templates = ["off"]
 
     summaries: List[Path] = []
+    also_cmp = bool(getattr(args, "also_threshold_template_compare", False))
     for sym in symbols:
         for tf in tfs:
             for lm in modes:
@@ -317,6 +384,7 @@ def main() -> None:
                                 max_hold_bars=args.max_hold_bars,
                                 require_strong=args.require_strong,
                                 markov_template="off",
+                                use_markov_threshold_template=False,
                                 out_dir=out_dir,
                                 prefix=prefix,
                             )
@@ -333,20 +401,40 @@ def main() -> None:
                                     max_hold_bars=args.max_hold_bars,
                                     require_strong=args.require_strong,
                                     markov_template=mt,
+                                    use_markov_threshold_template=False,
                                     out_dir=out_dir,
                                     prefix=prefix,
                                 )
                             )
+                            if also_cmp:
+                                summaries.append(
+                                    _run_one(
+                                        symbol=sym,
+                                        timeframe=tf,
+                                        limit=args.limit,
+                                        level_mode=lm,
+                                        entry_cooldown=cd,
+                                        max_hold_bars=args.max_hold_bars,
+                                        require_strong=args.require_strong,
+                                        markov_template=mt,
+                                        use_markov_threshold_template=True,
+                                        out_dir=out_dir,
+                                        prefix=prefix,
+                                    )
+                                )
 
     rows = [_load_summary(x) for x in summaries]
     csv_path = out_dir / f"{prefix}_matrix_summary.csv"
     if rows:
-        keys = list(rows[0].keys())
+        keys_set = set()
+        for r in rows:
+            keys_set.update(r.keys())
+        keys = sorted(keys_set)
         with csv_path.open("w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=keys)
             w.writeheader()
             for r in rows:
-                w.writerow(r)
+                w.writerow({k: r.get(k) for k in keys})
 
     json_path = out_dir / f"{prefix}_matrix_summary.json"
     json_path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")

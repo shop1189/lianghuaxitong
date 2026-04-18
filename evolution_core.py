@@ -46,6 +46,12 @@ class TradeMemory:
             return []
 
     def _save(self, data=None):
+        try:
+            from utils.trade_memory_autobak import maybe_backup_trade_memory
+
+            maybe_backup_trade_memory(self.file)
+        except Exception:
+            pass
         target = data if data is not None else self.data
         with open(self.file, "w", encoding="utf-8") as f:
             if self._envelope is not None:
@@ -54,9 +60,18 @@ class TradeMemory:
                 json.dump(target, f, ensure_ascii=False, indent=2)
 
     def add_open_trade(
-        self, direction, entry, sl, tp1, tp2, tp3, symbol: str = ""
+        self,
+        direction,
+        entry,
+        sl,
+        tp1,
+        tp2,
+        tp3,
+        symbol: str = "",
+        **meta: Any,
     ) -> None:
-        """开仓；direction 仅接受 做多/做空。带 symbol 时每币种最多一笔未平仓（实验轨多币种）。"""
+        """开仓；direction 仅接受 做多/做空。带 symbol 时每币种最多一笔未平仓（实验轨多币种）。
+        meta：levels_source、markov_template、斐价位等，平仓写入 trade_memory 时一并落盘。"""
         if direction not in ("做多", "做空"):
             return
         sym = str(symbol or "").strip()
@@ -70,7 +85,7 @@ class TradeMemory:
                     continue
                 if abs(float(t["entry"]) - float(entry)) < 1:
                     return
-        self.open_trades.append({
+        rec: Dict[str, Any] = {
             "direction": direction,
             "entry": entry,
             "sl": sl,
@@ -79,7 +94,11 @@ class TradeMemory:
             "tp3": tp3,
             "symbol": sym,
             "entry_time": time.time(),
-        })
+        }
+        for k, v in meta.items():
+            if v is not None and k not in rec:
+                rec[k] = v
+        self.open_trades.append(rec)
 
     def check_close_trade(
         self, current_price, symbol: Optional[str] = None
@@ -137,6 +156,20 @@ class TradeMemory:
         }
         if sym:
             record["symbol"] = sym
+        for k in (
+            "levels_source",
+            "markov_template",
+            "experiment_markov_template_enabled",
+            "fib_0_618",
+            "fib_1_618_up",
+            "fib_1_618_down",
+        ):
+            if k in trade and trade[k] is not None:
+                v = trade[k]
+                if isinstance(v, float):
+                    record[k] = round(v, rp)
+                else:
+                    record[k] = v
         self.data.append(record)
         self._save()
 
@@ -252,8 +285,11 @@ class AIAutoEvolution:
         tp3,
         *,
         symbol: str = "",
+        **meta: Any,
     ):
-        self.memory.add_open_trade(direction, entry, sl, tp1, tp2, tp3, symbol=symbol)
+        self.memory.add_open_trade(
+            direction, entry, sl, tp1, tp2, tp3, symbol=symbol, **meta
+        )
 
     def tick(self, price, symbol: Optional[str] = None) -> Optional[Tuple[float, str]]:
         return self.memory.check_close_trade(price, symbol)

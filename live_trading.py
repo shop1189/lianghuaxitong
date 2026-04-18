@@ -19,8 +19,13 @@ V3.16.5+ / V3.17.0：高级指标、形态融合、贝叶斯轻量、虚拟单�
   LONGXIA_EXPERIMENT_SAME_DIR_COOLDOWN_SEC  亏损后同向再入场冷却（秒），默认 0 关闭
   LONGXIA_EXPERIMENT_MIN_CONSISTENCY / LONGXIA_EXPERIMENT_MIN_BAYES  仅 legacy
   LONGXIA_EXPERIMENT_SL_PCT / TP1_PCT / TP2_PCT / TP3_PCT  实验轨止损止盈比例
+  LONGXIA_EXPERIMENT_USE_FIB_LEVELS     实验轨用 0.618/1.618 斐波微调 SL/TP1（0 关 / 1 开），默认 0
   LONGXIA_EXPERIMENT_SCAN_INTERVAL_SEC  后台全币种扫描间隔（秒），下限约 15
   LONGXIA_MARKOV_TEMPLATE              Markov 阈值模板 off|strict_chop|balanced，默认 off（仅实验轨）
+  LONGXIA_USE_MARKOV_THRESHOLD_TEMPLATE  策略层 Markov 状态模板（0/1），默认 0；为 1 时按 chop/mid/trend 加载 prob/consistency/频率
+  LONGXIA_DYNAMIC_LEVELS               主观察池虚拟单/决策页：按近期波动微调 SL/TP（0 关，默认）
+  LONGXIA_SCALED_EXIT                  主观察池虚拟单：分批止盈（SL 优先，再 TP1→TP2→TP3；0 关，默认）
+  LONGXIA_SCALED_W1 / W2 / W3          分批占原始名义比例，默认 0.5 / 0.3 / 0.2（可和不为 1，会归一化）
 可选真 Kronos：integrations/kronos_experiment_optional.py（未接模型前勿依赖 kronos_model）。
 """
 from __future__ import annotations
@@ -29,6 +34,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -37,7 +43,10 @@ import ccxt
 import numpy as np
 import pandas as pd
 from beijing_time import trade_memory_record_for_preview, utc_ms_to_bj_str
-from utils.trade_exit_rules import virtual_hit_profit_and_close_px
+from utils.dynamic_levels import widen_levels_from_closes
+from utils.exit_feature_flags import dynamic_levels_enabled, scaled_exit_enabled
+from utils.scaled_exit_rules import try_scaled_virtual_close
+from utils.trade_exit_rules import first_exit_tick, virtual_hit_profit_and_close_px
 from data_fetcher import _fetch_current_ticker_price_sync
 from data_fetcher import fetch_ohlcv as gate_fetch_ohlcv
 from data.fetcher import build_indicator_snapshot
@@ -55,8 +64,10 @@ from utils.experiment_track_filters import (
     mtf_aligned,
 )
 from utils.market_regime_state import (
+    USE_MARKOV_THRESHOLD_TEMPLATE,
     RegimeMarkovTracker,
     apply_markov_template_to_thresholds,
+    get_threshold_template,
     update_and_summarize_regime,
 )
 
@@ -69,6 +80,69 @@ _BAYES_FILE = Path(__file__).resolve().parent / "bayes_beta_state.json"
 _TRADE_MEMORY = Path(__file__).resolve().parent / "trade_memory.json"
 _REPO_ROOT = Path(__file__).resolve().parent
 _ADV_ENGINE = AdvancedIndicatorEngine(max_bars=300)
+_VIRTUAL_BR_TO_REASON = {"sl": "SL", "tp1": "TP1", "tp2": "TP2", "tp3": "TP3"}
+
+
+def _virtual_memos_max_catchup() -> int:
+    """单次同步最多按「计数差」补开几条虚拟单；超出则只对齐 hook，避免同一秒内刷出数百条同价记录。"""
+    try:
+        v = int(os.environ.get("LONGXIA_VIRTUAL_MEMOS_MAX_CATCHUP", "10"))
+    except ValueError:
+        v = 10
+    return max(1, min(v, 500))
+
+
+def _use_markov_threshold_template_resolved(force: Optional[bool]) -> bool:
+    """是否启用策略层 Markov 阈值模板：force 优先（回测），否则读环境，否则用代码默认。"""
+    if force is not None:
+        return bool(force)
+    v = os.environ.get("LONGXIA_USE_MARKOV_THRESHOLD_TEMPLATE", "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return bool(USE_MARKOV_THRESHOLD_TEMPLATE)
+
+
+def _experiment_frequency_load() -> Dict[str, float]:
+    """实验轨开仓节流：每标的最近开仓 Unix 时间（秒）。"""
+    p = _REPO_ROOT / "logs" / "experiment_frequency_state.json"
+    if not p.exists():
+        return {}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return {}
+        return {str(k): float(v) for k, v in raw.items()}
+    except Exception:
+        return {}
+
+
+def _experiment_frequency_save(d: Dict[str, float]) -> None:
+    p = _REPO_ROOT / "logs" / "experiment_frequency_state.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _experiment_frequency_allow(symbol: str, min_interval_sec: float) -> bool:
+    if min_interval_sec <= 0:
+        return True
+    sym = str(symbol or "").strip()
+    if not sym:
+        return True
+    now = time.time()
+    d = _experiment_frequency_load()
+    last = float(d.get(sym, 0.0))
+    return (now - last) >= float(min_interval_sec)
+
+
+def _experiment_frequency_mark_entry(symbol: str) -> None:
+    sym = str(symbol or "").strip()
+    if not sym:
+        return
+    d = _experiment_frequency_load()
+    d[sym] = time.time()
+    _experiment_frequency_save(d)
 
 
 def _trade_memory_parse(raw: Any) -> Tuple[List[dict], Optional[Dict[str, Any]]]:
@@ -82,6 +156,12 @@ def _trade_memory_parse(raw: Any) -> Tuple[List[dict], Optional[Dict[str, Any]]]
 
 
 def _trade_memory_write(trades: List[dict], env: Optional[Dict[str, Any]]) -> None:
+    try:
+        from utils.trade_memory_autobak import maybe_backup_trade_memory
+
+        maybe_backup_trade_memory(_TRADE_MEMORY)
+    except Exception:
+        pass
     if env is not None:
         out: Dict[str, Any] = {**env, "trades": trades}
         _TRADE_MEMORY.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -147,8 +227,12 @@ def _virtual_hit_and_close(
     return virtual_hit_profit_and_close_px(
         direction, price, entry, sl, tp1, tp2, tp3
     )
-def _sync_virtual_closeouts_for_price(price: float) -> None:
+def _sync_virtual_closeouts_for_price(price: float, symbol: str) -> None:
+    """仅撮合 **同一 symbol** 的未平仓虚拟单。禁止用 A 标的现价去判定 B 标的（否则盈亏/止损止盈会错乱）。"""
     if price <= 0:
+        return
+    sym_f = str(symbol or "").strip()
+    if not sym_f:
         return
     if not _TRADE_MEMORY.exists():
         return
@@ -161,12 +245,18 @@ def _sync_virtual_closeouts_for_price(price: float) -> None:
         return
     changed = False
     close_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    for r in data:
+    scaled_on = scaled_exit_enabled()
+    n_start = len(data)
+    for i in range(n_start):
+        r = data[i]
         if not isinstance(r, dict):
             continue
         if not r.get("virtual_signal"):
             continue
         if r.get("profit") is not None:
+            continue
+        r_sym = str(r.get("symbol") or "").strip()
+        if r_sym != sym_f:
             continue
         try:
             entry = float(r["entry"])
@@ -177,13 +267,23 @@ def _sync_virtual_closeouts_for_price(price: float) -> None:
         except Exception:
             continue
         direction = str(r.get("direction") or "做多")
-        hit = _virtual_hit_and_close(direction, float(price), entry, sl, tp1, tp2, tp3)
+        if scaled_on and r.get("scaled_mode"):
+            res = try_scaled_virtual_close(r, float(price), close_iso)
+            if res is not None:
+                closed, runner = res
+                data[i] = closed
+                changed = True
+                if runner is not None:
+                    data.append(runner)
+            continue
+        hit = first_exit_tick(direction, entry, sl, tp1, tp2, tp3, float(price))
         if hit is None:
             continue
-        profit_pct, close_px = hit
+        bracket, profit_pct, close_px = hit
         r["profit"] = profit_pct
-        r["close"] = close_px
+        r["close"] = round(float(close_px), 6)
         r["close_time"] = close_iso
+        r["close_reason"] = _VIRTUAL_BR_TO_REASON.get(bracket, str(bracket).upper())
         changed = True
     if changed:
         _trade_memory_write(data, env)
@@ -286,6 +386,21 @@ def _load_state() -> Dict[str, Any]:
         return json.loads(raw)
     except Exception:
         return {}
+
+
+def _state_slice_for_symbol(raw: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    """读取当前交易对的状态：新结构为根级 `by_symbol.{pair}`；旧版为根级扁平字段。
+    若误用整份 JSON 根对象取 `signals_today`，在仅含 `by_symbol` 时恒为 0，虚拟 memos 与页面计数会失效。"""
+    if not isinstance(raw, dict):
+        return {}
+    sym = str(symbol or "").strip()
+    nested = raw.get("by_symbol")
+    if isinstance(nested, dict) and sym:
+        block = nested.get(sym)
+        return dict(block) if isinstance(block, dict) else {}
+    if nested is None:
+        return raw
+    return {}
 def _tf_trend_word(closes: List[float], stride: int) -> str:
     if len(closes) < stride * 3:
         return "震荡"
@@ -530,6 +645,8 @@ class PatternRecognizer:
         return {
             "fib_0.382": hi - 0.382 * r,
             "fib_0.618": hi - 0.618 * r,
+            "fib_1.618_up": lo + 1.618 * r,
+            "fib_1.618_down": hi - 1.618 * r,
         }
     @classmethod
     def merge_patterns(cls, klines: List[Dict]) -> Tuple[List[str], Dict[str, float]]:
@@ -567,6 +684,69 @@ def _levels_for_direction(entry: float, direction: str) -> Tuple[float, float, f
 def _experiment_track_enabled() -> bool:
     v = os.environ.get("LONGXIA_EXPERIMENT_TRACK", "1").strip().lower()
     return v not in ("0", "false", "no", "off")
+
+
+def _env_experiment_fib_on() -> bool:
+    """LONGXIA_EXPERIMENT_USE_FIB_LEVELS=1 时对实验轨 SL/TP1 做斐波位修正（默认关）。"""
+    v = os.environ.get("LONGXIA_EXPERIMENT_USE_FIB_LEVELS", "0").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _levels_with_fib(
+    entry: float,
+    direction: str,
+    base: Tuple[float, float, float, float],
+    fib_map: Optional[Dict[str, Any]],
+) -> Tuple[Tuple[float, float, float, float], Dict[str, Any]]:
+    """
+    用 swing 区间斐波（0.618 回撤、1.618 扩展）微调实验轨价位；不改变则 levels_source=fixed_pct。
+    fib_map 键与 PatternRecognizer.merge_patterns 一致：fib_0.618、fib_1.618_up/down。
+    """
+    sl, tp1, tp2, tp3 = (float(base[0]), float(base[1]), float(base[2]), float(base[3]))
+    e = float(entry)
+    meta: Dict[str, Any] = {"levels_source": "fixed_pct"}
+    if not fib_map or not isinstance(fib_map, dict) or not _env_experiment_fib_on():
+        return (sl, tp1, tp2, tp3), meta
+    try:
+        f618 = float(fib_map.get("fib_0.618") or 0.0)
+    except Exception:
+        f618 = 0.0
+    try:
+        f1u = float(fib_map.get("fib_1.618_up") or 0.0)
+    except Exception:
+        f1u = 0.0
+    try:
+        f1d = float(fib_map.get("fib_1.618_down") or 0.0)
+    except Exception:
+        f1d = 0.0
+    changed = False
+    if direction == "做多":
+        if f618 > 0 and sl < f618 < e:
+            sl = f618
+            changed = True
+        if f1u > 0 and e < f1u:
+            ntp1 = min(tp1, f1u)
+            if abs(ntp1 - tp1) > 1e-12 * max(e, 1.0):
+                tp1 = ntp1
+                changed = True
+    elif direction == "做空":
+        if f618 > 0 and e < f618 < sl:
+            sl = f618
+            changed = True
+        if f1d > 0 and f1d < e:
+            ntp1 = min(tp1, f1d)
+            if abs(ntp1 - tp1) > 1e-12 * max(e, 1.0):
+                tp1 = ntp1
+                changed = True
+    if changed:
+        meta["levels_source"] = "fib_dynamic"
+        if f618 > 0:
+            meta["fib_0_618"] = f618
+        if f1u > 0:
+            meta["fib_1_618_up"] = f1u
+        if f1d > 0:
+            meta["fib_1_618_down"] = f1d
+    return (sl, tp1, tp2, tp3), meta
 
 
 def _experiment_levels_for_direction(
@@ -657,22 +837,27 @@ def _experiment_entry_filter_kronos_light(km: Dict[str, Any]) -> bool:
     edge_chop = float(os.environ.get("LONGXIA_EXPERIMENT_EDGE_CHOP_EXTRA", "4"))
     edge_mid = float(os.environ.get("LONGXIA_EXPERIMENT_EDGE_MID_EXTRA", "2"))
     extra = edge_chop if regime == "chop" else (edge_mid if regime == "mid" else 0.0)
-    need_edge = edge_base + extra
-    score_floor0 = float(os.environ.get("LONGXIA_EXPERIMENT_MIN_SCORE_ABS", "0.70"))
-    s_chop = float(os.environ.get("LONGXIA_EXPERIMENT_SCORE_CHOP_FLOOR", "0.72"))
-    s_mid = float(os.environ.get("LONGXIA_EXPERIMENT_SCORE_MID_FLOOR", "0.71"))
-    score_floor = score_floor0
-    if regime == "chop":
-        score_floor = max(score_floor, s_chop)
-    elif regime == "mid":
-        score_floor = max(score_floor, s_mid)
+    use_tpl = bool(km.get("experiment_markov_template_enabled"))
+    if use_tpl:
+        need_edge = float(km.get("experiment_markov_need_edge") or edge_base)
+        score_floor = float(km.get("experiment_markov_score_floor") or 0.7)
+    else:
+        need_edge = edge_base + extra
+        score_floor0 = float(os.environ.get("LONGXIA_EXPERIMENT_MIN_SCORE_ABS", "0.70"))
+        s_chop = float(os.environ.get("LONGXIA_EXPERIMENT_SCORE_CHOP_FLOOR", "0.72"))
+        s_mid = float(os.environ.get("LONGXIA_EXPERIMENT_SCORE_MID_FLOOR", "0.71"))
+        score_floor = score_floor0
+        if regime == "chop":
+            score_floor = max(score_floor, s_chop)
+        elif regime == "mid":
+            score_floor = max(score_floor, s_mid)
     tpl = str(km.get("markov_template") or os.environ.get("LONGXIA_MARKOV_TEMPLATE", "off")).strip().lower()
     if tpl in ("strict_chop", "balanced"):
         npb = km.get("markov_next_prob") or {}
         need_edge, score_floor = apply_markov_template_to_thresholds(
             regime=regime,
             edge_base=edge_base,
-            edge_extra=extra,
+            edge_extra=0.0 if use_tpl else extra,
             need_edge=need_edge,
             score_floor=score_floor,
             next_prob=npb if isinstance(npb, dict) else {},
@@ -758,6 +943,10 @@ def sync_experiment_track_from_snapshot(
         return
     if not _experiment_entry_filter(km):
         return
+    if km.get("experiment_markov_template_enabled"):
+        mf = float(km.get("experiment_markov_max_frequency_sec") or 0.0)
+        if mf > 0 and not _experiment_frequency_allow(sym, mf):
+            return
     sig = str(km.get("signal_label") or "")
     if sig.startswith("偏多"):
         direction = "做多"
@@ -773,7 +962,21 @@ def sync_experiment_track_from_snapshot(
         entry = float(km.get("entry_price") or pxf)
     except Exception:
         entry = pxf
-    sl, tp1, tp2, tp3 = _experiment_levels_for_direction(entry, direction)
+    base_lv = _experiment_levels_for_direction(entry, direction)
+    sl, tp1, tp2, tp3 = base_lv
+    fib_meta: Dict[str, Any] = {"levels_source": "fixed_pct"}
+    if _env_experiment_fib_on():
+        lv2, fib_meta = _levels_with_fib(
+            entry, direction, base_lv, km.get("fib_levels")
+        )
+        sl, tp1, tp2, tp3 = lv2
+    mk_tpl = str(km.get("markov_template") or "")
+    tpl_en = bool(km.get("experiment_markov_template_enabled"))
+    extra_meta: Dict[str, Any] = {
+        "markov_template": mk_tpl,
+        "experiment_markov_template_enabled": tpl_en,
+    }
+    extra_meta.update(fib_meta)
     mode = _experiment_mode_normalized()
     if mode == "legacy":
         if not _price_levels_self_check(entry, direction, sl, tp1, tp2, tp3):
@@ -781,7 +984,20 @@ def sync_experiment_track_from_snapshot(
     for t in ai_evo.memory.open_trades:
         if str(t.get("symbol") or "").strip() == sym:
             return
-    ai_evo.record(direction, entry, sl, tp1, tp2, tp3, symbol=sym)
+    ai_evo.record(
+        direction,
+        entry,
+        sl,
+        tp1,
+        tp2,
+        tp3,
+        symbol=sym,
+        **extra_meta,
+    )
+    if km.get("experiment_markov_template_enabled"):
+        mf = float(km.get("experiment_markov_max_frequency_sec") or 0.0)
+        if mf > 0:
+            _experiment_frequency_mark_entry(sym)
 
 
 def _background_scan_all_symbols_once() -> None:
@@ -791,7 +1007,7 @@ def _background_scan_all_symbols_once() -> None:
             if px <= 0:
                 continue
             km = get_v313_decision_snapshot(force_refresh=True, symbol=sym)
-            sync_virtual_memos_from_state(sym, px)
+            sync_virtual_memos_from_state(sym, px, decision=km)
             sync_experiment_track_from_snapshot(sym, px, km)
         except Exception:
             continue
@@ -830,6 +1046,18 @@ def _append_virtual_trade_memory_local(
     else:
         d = "模拟入场"
         sl, tp1, tp2, tp3 = _levels_for_direction(entry, "做多")
+    widen_dir = "做空" if d == "做空" else "做多"
+    if dynamic_levels_enabled():
+        try:
+            snap = build_indicator_snapshot(symbol, 500)
+            klines_lv = snap.get("klines") or []
+            closes_lv = [float(k["close"]) for k in klines_lv]
+            if closes_lv:
+                sl, tp1, tp2, tp3 = widen_levels_from_closes(
+                    entry, widen_dir, (sl, tp1, tp2, tp3), closes_lv
+                )
+        except Exception:
+            pass
     rec = {
         "date": today,
         "entry_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -846,6 +1074,11 @@ def _append_virtual_trade_memory_local(
         "symbol": symbol,
         "last_sig": last_sig,
     }
+    if scaled_exit_enabled():
+        rec["scaled_mode"] = True
+        rec["scaled_stage"] = 0
+        rec["scaled_remaining_orig"] = 1.0
+        rec["scaled_group_id"] = uuid.uuid4().hex
     data: List[dict] = []
     env: Optional[Dict[str, Any]] = None
     if _TRADE_MEMORY.exists():
@@ -897,6 +1130,7 @@ def experiment_km_for_bar(
     prob_down: float,
     markov_tracker: Optional[Any] = None,
     markov_template: Optional[str] = None,
+    force_markov_threshold_template: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """实验轨筛选所需字段 + Markov（供 get_v313 与 backtest 共用）。"""
     experiment_atr_pct = atr_percent_proxy(klines) if klines else 0.0
@@ -929,7 +1163,30 @@ def experiment_km_for_bar(
         markov_regime_line = str(ms.get("line") or "")
         markov_regime_state = {k: v for k, v in ms.items() if k != "line"}
 
+    use_tpl = _use_markov_threshold_template_resolved(force_markov_threshold_template)
+    tpl_cfg: Dict[str, Any] = {}
+    tpl_line = "—（未启用策略层 Markov 阈值模板）"
+    tpl_name = ""
+    need_edge_v: Optional[float] = None
+    score_floor_v: Optional[float] = None
+    max_freq_sec = 0.0
+    if use_tpl:
+        tpl_cfg = get_threshold_template(experiment_kronos_regime)
+        tpl_name = str(tpl_cfg.get("template_name") or "")
+        need_edge_v = float(tpl_cfg.get("probability_diff_threshold") or 18.0)
+        score_floor_v = float(tpl_cfg.get("consistency_score_threshold") or 0.7)
+        max_freq_sec = float(tpl_cfg.get("max_frequency_sec") or 0.0)
+        if max_freq_sec >= 60:
+            freq_zh = f"每{int(max_freq_sec // 60)}分钟最多1单"
+        else:
+            freq_zh = f"每{int(max(1, max_freq_sec))}秒最多1单"
+        tpl_line = (
+            f"当前策略模板：{tpl_name}（Markov，状态={experiment_kronos_regime}）｜"
+            f"prob_diff≥{need_edge_v}%｜consistency≥{score_floor_v * 100:.0f}%｜频率≤{freq_zh}"
+        )
+
     return {
+        "symbol": symbol,
         "signal_label": sig_label,
         "consistency_score": score,
         "prob_up_5m": prob_up,
@@ -944,6 +1201,13 @@ def experiment_km_for_bar(
         "markov_regime_state": markov_regime_state,
         "markov_regime_line": markov_regime_line,
         "markov_template": tpl,
+        "experiment_markov_template_enabled": use_tpl,
+        "experiment_markov_template_config": tpl_cfg if use_tpl else {},
+        "experiment_markov_template_line": tpl_line,
+        "experiment_markov_template": tpl_name if use_tpl else "",
+        "experiment_markov_need_edge": need_edge_v,
+        "experiment_markov_score_floor": score_floor_v,
+        "experiment_markov_max_frequency_sec": max_freq_sec,
     }
 
 
@@ -954,7 +1218,7 @@ def get_v313_decision_snapshot(
     ensure_trading_theory_library()
     snap = build_indicator_snapshot(symbol, 500)
     klines: List[Dict[str, Any]] = snap.get("klines") or []
-    state = _load_state()
+    state = _state_slice_for_symbol(_load_state(), symbol)
     closes = [float(k["close"]) for k in klines]
     rsi_1m = 50.0
     if len(closes) >= 15:
@@ -1025,14 +1289,18 @@ def get_v313_decision_snapshot(
         sig_label = "偏空（强）"
     last_sig = int(state.get("last_sig", 0) or 0)
     if sig_label.startswith("偏空"):
-        sl_price, tp1_price, tp2_price, _ = _levels_for_direction(entry, "做空")
+        sl_price, tp1_price, tp2_price, tp3_price = _levels_for_direction(entry, "做空")
         dir_side = "做空"
     elif sig_label.startswith("偏多"):
-        sl_price, tp1_price, tp2_price, _ = _levels_for_direction(entry, "做多")
+        sl_price, tp1_price, tp2_price, tp3_price = _levels_for_direction(entry, "做多")
         dir_side = "做多"
     else:
-        sl_price, tp1_price, tp2_price, _ = _levels_for_direction(entry, "做多")
+        sl_price, tp1_price, tp2_price, tp3_price = _levels_for_direction(entry, "做多")
         dir_side = "做多"
+    if dynamic_levels_enabled() and closes:
+        sl_price, tp1_price, tp2_price, tp3_price = widen_levels_from_closes(
+            entry, dir_side, (sl_price, tp1_price, tp2_price, tp3_price), closes
+        )
     cooldown_left = "—"
     last_iso = state.get("last_signal_bar_iso")
     if last_iso and klines:
@@ -1068,10 +1336,10 @@ def get_v313_decision_snapshot(
     )
     try:
         px_close = float(_fetch_current_ticker_price_sync(symbol))
-        _sync_virtual_closeouts_for_price(px_close)
+        _sync_virtual_closeouts_for_price(px_close, symbol)
     except Exception:
         if entry > 0:
-            _sync_virtual_closeouts_for_price(float(entry))
+            _sync_virtual_closeouts_for_price(float(entry), symbol)
     books_ctx = _load_theory_books()
     theory_book_hints_text = _pick_theory_hints(symbol, rsi_1m, books_ctx)
     brain_meta: Dict[str, Any] = {}
@@ -1110,6 +1378,7 @@ def get_v313_decision_snapshot(
         "sl_price": sl_price,
         "tp1_price": tp1_price,
         "tp2_price": tp2_price,
+        "tp3_price": tp3_price,
         "signal_label": sig_label,
         "cooldown_left": cooldown_left,
         "signals_today": state.get("signals_today", "—"),
@@ -1141,7 +1410,17 @@ def get_v313_decision_snapshot(
     }
 
 
-def sync_virtual_memos_from_state(symbol: str, entry_price: float) -> None:
+def sync_virtual_memos_from_state(
+    symbol: str,
+    entry_price: float,
+    *,
+    decision: Optional[Dict[str, Any]] = None,
+) -> None:
+    """主观察池虚拟开单：与 `live_trading_state.json` 计数对齐，并用与决策页一致的 `signal_label` 生成 memos（含 score 强信号）。
+
+    `decision` 应传入 `get_v313_decision_snapshot` 的返回值；若省略则仅按 RSI+5m 粗算标签（后台兜底），可能与页面不一致。
+    Hook 按 **标的** 单独记 `signals_today_seen` / `last_virt_sig_key`，避免多币种共用根字段互相覆盖导致长时间不落新单。
+    """
     _ensure_memos_hotfixes()
     try:
         ep = float(entry_price)
@@ -1149,9 +1428,9 @@ def sync_virtual_memos_from_state(symbol: str, entry_price: float) -> None:
         return
     if ep <= 0:
         return
-    _sync_virtual_closeouts_for_price(ep)
+    _sync_virtual_closeouts_for_price(ep, symbol)
     ensure_trading_theory_library()
-    state = _load_state()
+    state = _state_slice_for_symbol(_load_state(), symbol)
     st_date = str(state.get("signals_date") or "")
     n = int(state.get("signals_today", 0) or 0)
     last_sig = int(state.get("last_sig", 0) or 0)
@@ -1161,35 +1440,50 @@ def sync_virtual_memos_from_state(symbol: str, entry_price: float) -> None:
             hook = json.loads(_MEMOS_HOOK.read_text(encoding="utf-8"))
         except Exception:
             hook = {}
-    if hook.get("signals_date") != st_date:
-        hook["signals_date"] = st_date
-        hook["signals_today_seen"] = 0
-        hook["last_virt_sig_key"] = ""
-    prev = int(hook.get("signals_today_seen", 0) or 0)
-    snap = build_indicator_snapshot(symbol, 500)
-    klines = snap.get("klines") or []
-    closes = [float(k["close"]) for k in klines]
-    rsi_1m = 50.0
-    if len(closes) >= 15:
-        s = rsi_series(pd.Series(closes), 14)
-        rsi_1m = float(s.iloc[-1]) if pd.notna(s.iloc[-1]) else 50.0
-    t5 = _tf_trend_word(closes, 5)
-    sig_label = _sig_label_from_rsi_t5(rsi_1m, t5)
+    hook.setdefault("by_symbol", {})
+    sym_hook: Dict[str, Any] = hook["by_symbol"].setdefault(symbol, {})
+    if sym_hook.get("signals_date") != st_date:
+        sym_hook["signals_date"] = st_date
+        sym_hook["signals_today_seen"] = 0
+        sym_hook["last_virt_sig_key"] = ""
+    prev = int(sym_hook.get("signals_today_seen", 0) or 0)
+
+    if decision is not None:
+        sig_label = str(decision.get("signal_label") or "").strip() or "无"
+    else:
+        snap = build_indicator_snapshot(symbol, 500)
+        klines = snap.get("klines") or []
+        closes = [float(k["close"]) for k in klines]
+        rsi_1m = 50.0
+        if len(closes) >= 15:
+            s = rsi_series(pd.Series(closes), 14)
+            rsi_1m = float(s.iloc[-1]) if pd.notna(s.iloc[-1]) else 50.0
+        t5 = _tf_trend_word(closes, 5)
+        sig_label = _sig_label_from_rsi_t5(rsi_1m, t5)
+
     def _dir_from_sig(lb: str) -> str:
         if lb.startswith("偏多"):
             return "做多"
         if lb.startswith("偏空"):
             return "做空"
         return "模拟入场"
+
     virt_key = f"{st_date}|{symbol}|{sig_label}|{last_sig}"
     if n > prev:
-        for _ in range(n - prev):
-            _append_virtual_trade_memory_local(symbol, ep, _dir_from_sig(sig_label), last_sig)
-        hook["signals_today_seen"] = n
-    if sig_label != "无" and hook.get("last_virt_sig_key") != virt_key:
+        delta = n - prev
+        cap = _virtual_memos_max_catchup()
+        if delta > cap:
+            # 常见于：换日/新 hook、或首次同步时 prev=0 而 state 里 signals_today 已是全天累计，
+            # 若按差值循环 append 会在同一 HTTP 请求内写入数百条同秒、同价记录。
+            pass
+        else:
+            for _ in range(delta):
+                _append_virtual_trade_memory_local(symbol, ep, _dir_from_sig(sig_label), last_sig)
+    if sig_label != "无" and sym_hook.get("last_virt_sig_key") != virt_key:
         if n <= prev:
             _append_virtual_trade_memory_local(symbol, ep, _dir_from_sig(sig_label), last_sig)
-        hook["last_virt_sig_key"] = virt_key
+    sym_hook["signals_today_seen"] = n
+    sym_hook["last_virt_sig_key"] = virt_key
     _MEMOS_HOOK.write_text(json.dumps(hook, ensure_ascii=False, indent=2), encoding="utf-8")
 def start_live_bot_background() -> None:
     ensure_trading_theory_library()

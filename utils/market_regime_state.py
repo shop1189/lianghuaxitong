@@ -2,14 +2,52 @@
 """
 轻量 Markov 行情状态：记录 chop/mid/trend 转移计数，输出下一状态经验分布。
 状态文件：logs/market_regime_state.json（与 experiment_risk 类似，勿提交密钥）
+
+策略层阈值模板（与状态名 chop/mid/trend 区分展示名）：
+- 模板展示名：strict_chop / balanced / trend_follow
+- 默认 USE_MARKOV_THRESHOLD_TEMPLATE=False；是否启用由 LONGXIA_USE_MARKOV_THRESHOLD_TEMPLATE 决定（见 live_trading）
 """
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 _STATES = ("chop", "mid", "trend")
+
+# 代码级默认关；未设环境变量时与历史行为一致
+USE_MARKOV_THRESHOLD_TEMPLATE: bool = False
+
+# 状态 → 策略模板（prob 差为百分点；consistency 为 |score| 下限 0~1；频率为最小开仓间隔秒）
+_MARKOV_STATE_STRATEGY_TEMPLATES: Dict[str, Dict[str, Any]] = {
+    "chop": {
+        "template_name": "strict_chop",
+        "probability_diff_threshold": 25.0,
+        "consistency_score_threshold": 0.80,
+        "max_frequency_sec": 1800,
+    },
+    "mid": {
+        "template_name": "balanced",
+        "probability_diff_threshold": 18.0,
+        "consistency_score_threshold": 0.72,
+        "max_frequency_sec": 900,
+    },
+    "trend": {
+        "template_name": "trend_follow",
+        "probability_diff_threshold": 12.0,
+        "consistency_score_threshold": 0.65,
+        "max_frequency_sec": 300,
+    },
+}
+
+
+def get_threshold_template(current_state: str) -> Dict[str, Any]:
+    """按当前 Markov 状态返回策略层阈值模板（深拷贝）。"""
+    cur = str(current_state or "").strip().lower()
+    if cur not in _STATES:
+        cur = "mid"
+    return copy.deepcopy(_MARKOV_STATE_STRATEGY_TEMPLATES[cur])
 
 
 def _default_state() -> Dict[str, Any]:

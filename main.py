@@ -96,6 +96,9 @@ def _fib_source_snippet(r: dict) -> str:
     bits: list[str] = []
     if ls:
         bits.append(ls)
+    mt = str(r.get("markov_template") or "").strip()
+    if mt:
+        bits.append(f"模板:{mt}")
     for k, lab in (
         ("fib_0_618", "0.618"),
         ("fib_1_618_up", "1.618_up"),
@@ -111,15 +114,20 @@ def _fib_source_snippet(r: dict) -> str:
 
 
 def _rr_gross_net_str(r: dict) -> str:
-    """以 TP1 与 SL 相对入场距离估算 RR（毛/净），无数据时显示 —。"""
+    """以 TP1 与 SL 相对入场距离估算 RR（毛/净），做多/做空对称；净 RR 扣双边手续费口径。"""
     try:
         e = float(r.get("entry", 0))
         sl = float(r.get("sl", 0))
         tp1 = float(r.get("tp1", 0))
+        d = str(r.get("direction") or "")
         if e <= 0:
             return "—"
-        risk = abs(e - sl) / e * 100
-        rew = abs(tp1 - e) / e * 100
+        if d == "做空":
+            risk = abs(sl - e) / e * 100
+            rew = abs(e - tp1) / e * 100
+        else:
+            risk = abs(e - sl) / e * 100
+            rew = abs(tp1 - e) / e * 100
         if risk < 1e-9:
             return "—"
         g = rew / risk
@@ -129,15 +137,29 @@ def _rr_gross_net_str(r: dict) -> str:
         return "—"
 
 
+def _normalize_bracket_cr(raw: object) -> str:
+    """落库 close_reason 大小写不一（sl / SL）时统一为 TP1…/SL。"""
+    s = str(raw or "").strip().upper()
+    if s in ("SL", "TP1", "TP2", "TP3"):
+        return s
+    return ""
+
+
+def _exit_direction_for_levels(r: dict) -> str:
+    """与 first_exit_tick / 虚拟平仓一致：模拟入场按做多判价位。"""
+    d = str(r.get("direction") or "做多")
+    if d == "模拟入场":
+        return "做多"
+    return d
+
+
 def _infer_close_reason_from_levels(r: dict) -> str:
-    """与 live_trading._virtual_hit_and_close 判定顺序一致（SL 优先于 TP3/TP2/TP1）。"""
+    """与 live_trading / first_exit_tick 判定顺序一致（SL 优先于 TP3/TP2/TP1）。"""
     try:
         c = float(r.get("close"))
     except (TypeError, ValueError):
         return ""
-    d = str(r.get("direction") or "做多")
-    if d == "模拟入场":
-        d = "做多"
+    d = _exit_direction_for_levels(r)
     try:
         sl = float(r["sl"])
         tp1 = float(r["tp1"])
@@ -166,19 +188,59 @@ def _infer_close_reason_from_levels(r: dict) -> str:
     return ""
 
 
-def _result_cn(r: dict) -> str:
+def _infer_close_reason_tp_only(r: dict) -> str:
+    """只根据 TP 档位与平仓价推断止盈档（不判 SL），用于毛盈亏为正但与止损推断冲突时。"""
+    try:
+        c = float(r.get("close"))
+    except (TypeError, ValueError):
+        return ""
+    d = _exit_direction_for_levels(r)
+    try:
+        tp1 = float(r["tp1"])
+        tp2 = float(r["tp2"])
+        tp3 = float(r["tp3"])
+    except Exception:
+        return ""
+    if d == "做多":
+        if c >= tp3:
+            return "TP3"
+        if c >= tp2:
+            return "TP2"
+        if c >= tp1:
+            return "TP1"
+    elif d == "做空":
+        if c <= tp3:
+            return "TP3"
+        if c <= tp2:
+            return "TP2"
+        if c <= tp1:
+            return "TP1"
+    return ""
+
+
+def _resolved_close_bracket(r: dict) -> str:
+    """统一解析平仓档位：规范化字段、按价位推断，并与毛盈亏符号对齐（结果列与分桶统计共用）。"""
     if r.get("profit") is None:
-        return "未平"
-    cr = str(r.get("close_reason") or "").strip()
-    if cr not in ("TP1", "TP2", "TP3", "SL"):
+        return ""
+    cr = _normalize_bracket_cr(r.get("close_reason"))
+    if not cr:
         cr = _infer_close_reason_from_levels(r)
     try:
         pnl = float(r.get("profit") or 0)
     except (TypeError, ValueError):
         pnl = 0.0
-    # 亏损单不应显示为止盈（推断价与字段偶发不一致时）
     if pnl < 0 and cr in ("TP1", "TP2", "TP3"):
         cr = "SL"
+    if pnl > 0 and cr == "SL":
+        tp = _infer_close_reason_tp_only(r)
+        cr = tp if tp else "TP1"
+    return cr
+
+
+def _result_cn(r: dict) -> str:
+    if r.get("profit") is None:
+        return "未平"
+    cr = _resolved_close_bracket(r)
     if cr in ("TP1", "TP2", "TP3"):
         return f"止盈·{cr}"
     if cr == "SL":
@@ -207,6 +269,58 @@ def _load_trades_flat() -> list[dict]:
     return [r for r in rows if isinstance(r, dict)]
 
 
+def _experiment_open_rows_today(today_bj: str) -> list[dict]:
+    """规则实验轨未平仓单 → 与 trade_memory 同形宽表行，便于首页与已落库单并列展示。"""
+    try:
+        from evolution_core import ai_evo
+    except Exception:
+        return []
+    import time as _time
+
+    out: list[dict] = []
+    for ot in ai_evo.memory.open_trades:
+        sym = str(ot.get("symbol") or "").strip()
+        rp = 6 if sym else 2
+        try:
+            et_ts = float(ot.get("entry_time") or _time.time())
+        except Exception:
+            et_ts = _time.time()
+        et = datetime.fromtimestamp(et_ts, tz=timezone.utc)
+        if et.astimezone(_BJ).strftime("%Y-%m-%d") != today_bj:
+            continue
+        def _rnd(x: object) -> object:
+            try:
+                return round(float(x), rp)
+            except Exception:
+                return x
+
+        row = {
+            "date": today_bj,
+            "entry_time": et.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "close_time": "—",
+            "direction": ot.get("direction"),
+            "entry": _rnd(ot.get("entry")),
+            "sl": _rnd(ot.get("sl")),
+            "tp1": _rnd(ot.get("tp1")),
+            "tp2": _rnd(ot.get("tp2")),
+            "tp3": _rnd(ot.get("tp3")),
+            "close": None,
+            "profit": None,
+            "virtual_signal": False,
+            "symbol": sym,
+            "levels_source": ot.get("levels_source"),
+            "markov_template": ot.get("markov_template"),
+            "experiment_markov_template_enabled": ot.get(
+                "experiment_markov_template_enabled"
+            ),
+            "fib_0_618": ot.get("fib_0_618"),
+            "fib_1_618_up": ot.get("fib_1_618_up"),
+            "fib_1_618_down": ot.get("fib_1_618_down"),
+        }
+        out.append(row)
+    return out
+
+
 def _reflection_experiment(exp_closed: list[dict]) -> str:
     if not exp_closed:
         return "【规则实验轨】样本不足，建议继续积累已平仓记录后再评估过拟合与门槛。"
@@ -217,6 +331,23 @@ def _reflection_experiment(exp_closed: list[dict]) -> str:
     if wr >= 45:
         return "【规则实验轨】胜率处于中性区间，建议继续积累 memos 样本，并观察多空分布与时段规律。"
     return "【规则实验轨】近期胜率偏低，建议结合大周期趋势与冷却节奏，避免在震荡区间反复试错。"
+
+
+def _memo_cal_day_bj(r: dict) -> Optional[str]:
+    """trade_memory 单行对应的北京日历日（优先 `date`，否则从 `entry_time` 解析）。"""
+    ds = str(r.get("date") or "").strip()
+    if len(ds) >= 10:
+        return ds[:10]
+    et = str(r.get("entry_time") or "").strip()
+    if not et:
+        return None
+    try:
+        dt = datetime.fromisoformat(et.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(_BJ).strftime("%Y-%m-%d")
+    except Exception:
+        return None
 
 
 def _memos_reflect_bar_html() -> str:
@@ -249,6 +380,15 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
     vir_open = [r for r in vir if r.get("profit") is None]
 
     exp_today = [r for r in exp if r.get("date") == today_bj]
+    exp_open_ui = _experiment_open_rows_today(today_bj)
+    _seen: set[tuple[Any, Any]] = {
+        (str(r.get("symbol") or ""), str(r.get("entry_time") or "")) for r in exp_today
+    }
+    for r in exp_open_ui:
+        k = (str(r.get("symbol") or ""), str(r.get("entry_time") or ""))
+        if k not in _seen:
+            exp_today.append(r)
+            _seen.add(k)
     exp_today_closed = [r for r in exp_closed if r.get("date") == today_bj]
     vir_today = [r for r in vir if r.get("date") == today_bj]
     vir_today_closed = [r for r in vir_closed if r.get("date") == today_bj]
@@ -268,6 +408,22 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
         lwr = f"{round(lw / len(longs) * 100, 2)}%" if longs else "—"
         swr = f"{round(sw / len(shorts) * 100, 2)}%" if shorts else "—"
         return lwr, swr
+
+    exp_hist_closed_n = len(
+        [
+            r
+            for r in exp_closed
+            if _memo_cal_day_bj(r) not in (None, today_bj)
+        ]
+    )
+    vir_hist_closed_n = len(
+        [
+            r
+            for r in vir_closed
+            if _memo_cal_day_bj(r) not in (None, today_bj)
+        ]
+    )
+    vir_date_unknown_n = len([r for r in vir_closed if _memo_cal_day_bj(r) is None])
 
     # —— 规则实验轨（非虚拟，已平仓）——
     e_wr = _win_rate_pct(exp_closed)
@@ -309,10 +465,10 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
     avg_g = sum_gross_today / len(vir_today_closed) if vir_today_closed else 0.0
     n_closed_today = len(vir_today_closed)
 
-    # 平仓结构 & 分桶（主观察池·当日）
+    # 平仓结构 & 分桶（主观察池·当日，与宽表「结果」列同一套档位解析）
     buckets = {"TP1": [], "TP2": [], "TP3": [], "SL": []}
     for r in vir_today_closed:
-        cr = str(r.get("close_reason") or "")
+        cr = _resolved_close_bracket(r)
         if cr in buckets:
             buckets[cr].append(r)
         else:
@@ -349,6 +505,7 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
 <table class="metrics">
 <tr><td colspan="2"><strong>一、规则实验轨</strong>（virtual_signal 为假：本地 memos，用于大版本同步后的规则/门槛实验，与主观察池统计分列）</td></tr>
 <tr><td>总交易（累计已平仓笔数）</td><td>{len(exp_closed)}</td></tr>
+<tr><td>其中·历史已平仓（早于今日）</td><td>{exp_hist_closed_n}</td></tr>
 <tr><td>总赢 / 总亏</td><td>{len([r for r in exp_closed if float(r.get('profit') or 0) > 0])} / {len([r for r in exp_closed if float(r.get('profit') or 0) <= 0])}</td></tr>
 <tr><td>总胜率</td><td>{e_wr}</td></tr>
 <tr><td>做多胜率（累计·本轨）</td><td>{el_wr}</td></tr>
@@ -364,6 +521,7 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
 <table class="metrics" style="margin-top:12px">
 <tr><td colspan="2"><strong>二、主观察池</strong>（<code>virtual_signal</code> 为真：与决策页信号对齐，大版本外以微调为主，统计独立）</td></tr>
 <tr><td>总交易（累计已平仓笔数）</td><td>{len(vir_closed)}</td></tr>
+<tr><td>其中·历史已平仓（早于今日）</td><td>{vir_hist_closed_n}</td></tr>
 <tr><td>总赢 / 总亏</td><td>{len([r for r in vir_closed if float(r.get('profit') or 0) > 0])} / {len([r for r in vir_closed if float(r.get('profit') or 0) <= 0])}</td></tr>
 <tr><td>总胜率（毛）</td><td>{v_gross_wr}</td></tr>
 <tr><td>总胜率（净·已扣双边手续费）</td><td>{v_net_wr}</td></tr>
@@ -465,10 +623,28 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
 </table>
 """
 
-    foot = """
+    unk_note = (
+        f"另有 {vir_date_unknown_n} 笔主观察池已平仓缺少可解析日期，未计入「历史/今日」拆行。"
+        if vir_date_unknown_n
+        else ""
+    )
+    hist_same_note = ""
+    if vir_closed and vir_hist_closed_n == 0 and len(vir_today_closed) > 0:
+        hist_same_note = (
+            "「累计已平仓」与「今日已平仓」笔数一致且「历史已平仓」为 0 时，表示当前 trade_memory.json "
+            "中没有更早日历日的已平仓主观察池样本（常见于更换或清空文件）。"
+            "若今日曾出现同秒刷屏异常单，累计与今日也会被抬高；可从备份恢复或删除重复行后再看统计。"
+        )
+    _foot_extra = " ".join(x for x in (unk_note, hist_same_note) if x)
+    _foot_extra_html = f"<br/>{html.escape(_foot_extra)}" if _foot_extra else ""
+
+    foot = f"""
 <p class="muted" style="margin-top:14px;font-size:0.86rem;line-height:1.55">
 说明：以下为本地 <code>trade_memory.json</code> 中的 memos 记录（两轨均为模拟记账，非交易所成交回报）。
-手续费按展示口径双边合计 0.16% 估算净盈亏；统计以记录内 <code>date</code>（北京日历日）为准。
+手续费按展示口径双边合计 0.16% 估算净盈亏；「历史/今日」拆行优先用记录 <code>date</code>，缺省时用 <code>entry_time</code> 转北京时间。
+「累计已平仓」= 全文件内该轨全部已平仓笔数（不限日期）；「其中·历史已平仓」为 0 且今日有大量已平时，多为文件内无更早样本或今日含异常刷屏单。
+{_foot_extra_html}
+「主观察池」虚拟平仓按各标的 <code>symbol</code> 独立用现价撮合；若历史记录曾在多币种并存时出现盈亏与止损/止盈不一致，多为旧版错误地用单一价格去扫全表所致，已修复。
 「规则实验轨」若长期笔数很少或为空，通常因当前服务主路径未接入该轨写入链路，属设计分叉而非页面故障；详见仓库 <code>docs/trade_memory_two_tracks.md</code>。
 </p>
 """
@@ -980,6 +1156,13 @@ def _backtest_matrix_report_block() -> str:
         )
     )
 
+    moc = str(data.get("markov_optimized_compare_text") or "")
+    if moc:
+        chunks.append(
+            '<p class="muted" style="margin:12px 0 4px 0">五、策略层 Markov 阈值模板关/开对比（矩阵需 <code>--also-threshold-template-compare</code>）</p>'
+            f'<p class="muted" style="margin:0 0 8px 0;line-height:1.55">{html.escape(moc)}</p>'
+        )
+
     return "\n".join(chunks)
 
 
@@ -1113,7 +1296,7 @@ async def page_decision(symbol: str = Query("SOL/USDT")):
     try:
         if px_for_memos is not None:
             pxf = float(px_for_memos)
-            sync_virtual_memos_from_state(sym, pxf)
+            sync_virtual_memos_from_state(sym, pxf, decision=km)
             sync_experiment_track_from_snapshot(sym, pxf, km)
     except Exception:
         pass
@@ -1263,6 +1446,14 @@ h1 {{
   position: fixed; bottom: 12px; right: 14px; font-size: 0.75rem; color: var(--muted);
   background: rgba(0,0,0,.5); padding: 6px 12px; border-radius: 8px; z-index: 10;
 }}
+.home-copytrade-top {{
+  text-align: center; margin: 0 0 14px 0; padding: 10px 14px;
+  background: rgba(0,0,0,.28); border-radius: 12px; border: 1px solid rgba(255,255,255,.1);
+}}
+.home-copytrade-top a {{
+  color: #a5d8ff; text-decoration: none; font-size: 0.98rem; font-weight: 600;
+}}
+.home-copytrade-top a:hover {{ text-decoration: underline; color: #cfe0ff; }}
 code {{ color: #a5d8ff; font-size: 0.85em; }}
 .wait-big {{
   font-size: 1.35rem; font-weight: 800; color: #ffe066; text-align: center;
@@ -1274,6 +1465,7 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 .v314-signal .v314-ts {{ color: var(--muted); font-size: 0.88rem; margin-top: 0.65em; }}
 </style></head><body>
 <div class="page-wrap">
+<div class="home-copytrade-top"><a href="/copytrade?symbol={qsym}">跟单简版（带单观看）</a></div>
 {_memos_banner_html()}
 
 <div class="nav-strip">{nav_html}</div>
@@ -1284,6 +1476,8 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <p class="subline">当前交易对：<b>{html.escape(sym)}</b>
 &nbsp;·&nbsp; 数据源 <code>{html.escape(_meta_source_zh(meta.get("source")))}</code>
 &nbsp;·&nbsp; 1 分钟 K 线根数 <b>{html.escape(str(meta.get("count", "")))}</b></p>
+<p class="subline" style="margin-top:-10px"><a class="nav-link" href="/ct?symbol={qsym}">短链 /ct</a>
+&nbsp;·&nbsp; <span class="muted">专业数据仍在下方橙框/绿框；简版仅保留方向与价位。</span></p>
 
 <div class="card orange">
 <h2>关键指标（下一根 5 分钟 / 概率 / 大周期）</h2>
@@ -1307,6 +1501,7 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <tr><td>Hermes 技能库（已入脑节选 · 参考）</td><td>{html.escape(_hft_brain_row(km))}</td></tr>
 <tr><td>趋势状态</td><td>{html.escape(_zh_decision_copy(km.get("trend_status")))}</td></tr>
 <tr><td>行情状态（Markov）</td><td>{html.escape(_zh_decision_copy(km.get("markov_regime_line") or "—"))}</td></tr>
+<tr><td>当前策略模板（Markov）</td><td>{html.escape(_zh_decision_copy(km.get("experiment_markov_template_line") or "—"))}</td></tr>
 <tr><td>执行状态 · 信号转单同步</td><td>{html.escape(str(km.get("virtual_order_status", "—")))}</td></tr>
 <tr><td>数据新鲜度 · Gate 现货 ticker 报价时间（北京）</td><td>{html.escape(ticker_quote_bj)}</td></tr>
 <tr><td>K 线拉取实现</td><td>{html.escape(klines_impl_line)}</td></tr>
@@ -1374,6 +1569,223 @@ def json_dumps_safe(obj) -> str:
         return json.dumps(obj, ensure_ascii=False, indent=2)
     except Exception:
         return str(obj)
+
+
+def _copytrade_side(km: dict) -> str:
+    sig = str(km.get("signal_label") or "")
+    if sig.startswith("偏空"):
+        return "做空"
+    if sig.startswith("偏多"):
+        return "做多"
+    return "—"
+
+
+def _copytrade_advice_title(km: dict) -> str:
+    sig = str(km.get("signal_label") or "无")
+    if "（强）" in sig:
+        return "信号较强 · 可参考方向挂单（控制仓位）"
+    if sig.startswith("偏多") or sig.startswith("偏空"):
+        return "信号较轻 · 建议轻仓或观望"
+    return "无明确强信号 · 建议观望"
+
+
+def _copytrade_rr_gross_one_line(entry: float, sl: float, tp1: float, side: str) -> str:
+    try:
+        e, s, t = float(entry), float(sl), float(tp1)
+    except Exception:
+        return "—"
+    if e <= 0:
+        return "—"
+    if side == "做空":
+        risk = abs(s - e) / e * 100
+        rew = abs(e - t) / e * 100
+    else:
+        risk = abs(e - s) / e * 100
+        rew = abs(t - e) / e * 100
+    if risk < 1e-9:
+        return "—"
+    return f"{rew / risk:.2f}（毛，以 TP1/SL 粗算）"
+
+
+def _copytrade_position_mgmt_html(km: dict, px: Optional[float]) -> str:
+    """简版页：当前价相对 SL/TP 的距离%、分批建议（文案）；side 与快照价位一致。"""
+    side = _copytrade_side(km)
+    if side == "—" or px is None or float(px) <= 0:
+        return "<p class=\"muted\">暂无有效信号或现价时，不做仓位管理数值展示；请刷新或换币种。</p>"
+    try:
+        e = float(km.get("entry_price") or 0)
+        sl = float(km.get("sl_price") or 0)
+        t1 = float(km.get("tp1_price") or 0)
+        t2 = float(km.get("tp2_price") or 0)
+    except Exception:
+        return "<p class=\"muted\">价位数据不完整。</p>"
+    if e <= 0 or sl <= 0:
+        return "<p class=\"muted\">价位数据不完整。</p>"
+    p = float(px)
+    lines: List[str] = []
+    if side == "做多":
+        d_sl = (p - sl) / p * 100.0
+        d_tp1 = (t1 - p) / p * 100.0 if t1 > p else None
+        d_tp2 = (t2 - p) / p * 100.0 if t2 > p else None
+        lamp_sl = "🔴" if d_sl < 0.12 else ("🟡" if d_sl < 0.35 else "⚪")
+        lamp_tp = "🟢" if (d_tp1 is not None and 0 < d_tp1 < 0.12) else "⚪"
+        lines.append(
+            f"{lamp_sl} 当前价距止损 SL：约 <b>{d_sl:+.3f}%</b>（向下触及 SL 所需大致比例；负值表示已在 SL 下方）"
+        )
+        if d_tp1 is not None:
+            lines.append(
+                f"{lamp_tp} 距止盈 TP1：约 <b>{d_tp1:+.3f}%</b>（向上到 TP1 所需大致比例）"
+            )
+        if t2 > 0 and d_tp2 is not None:
+            lines.append(f"⚪ 距 TP2：约 <b>{d_tp2:+.3f}%</b>")
+    else:
+        d_sl = (sl - p) / p * 100.0
+        d_tp1 = (p - t1) / p * 100.0 if p > t1 else None
+        d_tp2 = (p - t2) / p * 100.0 if p > t2 else None
+        lamp_sl = "🔴" if d_sl < 0.12 else ("🟡" if d_sl < 0.35 else "⚪")
+        lamp_tp = "🟢" if (d_tp1 is not None and 0 < d_tp1 < 0.12) else "⚪"
+        lines.append(
+            f"{lamp_sl} 当前价距止损 SL：约 <b>{d_sl:+.3f}%</b>（向上触及 SL 所需大致比例）"
+        )
+        if d_tp1 is not None:
+            lines.append(
+                f"{lamp_tp} 距止盈 TP1：约 <b>{d_tp1:+.3f}%</b>（向下到 TP1 所需大致比例）"
+            )
+        if t2 > 0 and d_tp2 is not None:
+            lines.append(f"⚪ 距 TP2：约 <b>{d_tp2:+.3f}%</b>")
+    lines.append(
+        "<br/><span class=\"muted\">单笔风险占账户：常见参考 <b>0.4%～0.8%</b>（按自有规则缩放杠杆）；"
+        "双边手续费展示口径约 <b>0.16%</b>，净盈亏需自行扣除。</span>"
+    )
+    lines.append(
+        "<br/><b>分批参考（非指令）：</b> TP1 附近可考虑减仓 30%～50%；剩余可尝试保本移损；"
+        "TP2 再减一部分。实际以交易所挂单为准。"
+    )
+    return "<p style=\"line-height:1.75;margin:0\">" + "<br/>".join(lines) + "</p>"
+
+
+@app.get("/copytrade/", include_in_schema=False)
+def page_copytrade_redirect_slash():
+    """部分反代/浏览器访问 /copytrade/ 时 404，统一跳转到无尾斜杠。"""
+    return RedirectResponse(url="/copytrade", status_code=307)
+
+
+@app.get("/copytrade", response_class=HTMLResponse)
+@app.get("/ct", response_class=HTMLResponse)
+async def page_copytrade(symbol: str = Query("SOL/USDT")):
+    """跟单简版：仅方向、参考价、SL/TP、RR、Markov 摘要，供带单观看（与 /decision 数据同源）。
+    同页另注册短路径 /ct（便于反代或手输 URL）。若仍 404，请确认服务器已拉取含本路由的 main.py 并重启进程。"""
+    sym = _pick_symbol(symbol)
+    qsym = quote(sym, safe="")
+    km = get_v313_decision_snapshot(force_refresh=True, symbol=sym)
+    snap = build_indicator_snapshot(sym, 500)
+    last_close = snap.get("last_close")
+    try:
+        live_ticker = await fetch_current_ticker_price(sym)
+    except Exception:
+        live_ticker = None
+    px = float(live_ticker) if live_ticker is not None else None
+    if px is None and last_close is not None:
+        try:
+            px = float(last_close)
+        except Exception:
+            px = None
+
+    # 与 /decision 一致：刷新简版时也同步主观察池 memos（否则用户长期只看简版会「有信号但无记账」）
+    try:
+        if px is not None:
+            sync_virtual_memos_from_state(sym, float(px), decision=km)
+    except Exception:
+        pass
+
+    side = _copytrade_side(km)
+    adv = _copytrade_advice_title(km)
+    sig = html.escape(str(km.get("signal_label") or "—"))
+    entry = km.get("entry_price")
+    sl = km.get("sl_price")
+    tp1 = km.get("tp1_price")
+    tp2 = km.get("tp2_price")
+    rr_line = "—"
+    if side in ("做多", "做空"):
+        try:
+            rr_line = _copytrade_rr_gross_one_line(
+                float(entry or 0), float(sl or 0), float(tp1 or 0), side
+            )
+        except Exception:
+            rr_line = "—"
+
+    nav_ct = []
+    for s in SYMBOL_CHOICES:
+        active = "font-weight:700;color:#ffe082;" if s == sym else "color:#9ecbff;"
+        nav_ct.append(
+            f'<a style="margin-right:12px;{active}" href="/copytrade?symbol={quote(s, safe="")}">{html.escape(s)}</a>'
+        )
+    nav_ct_html = "\n".join(nav_ct)
+
+    mk = html.escape(_zh_decision_copy(km.get("markov_regime_line") or "—"))
+    tpl = html.escape(_zh_decision_copy(km.get("experiment_markov_template_line") or "—"))
+
+    pos_html = _copytrade_position_mgmt_html(km, px)
+    px_s = fmt_price(px) if px is not None else "—"
+
+    body = f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>跟单简版 · {html.escape(sym)}</title>
+<style>
+body{{margin:0;background:#0f1419;color:#e8eef7;font-family:system-ui,"PingFang SC","Microsoft YaHei",sans-serif;min-height:100vh;}}
+.copytrade-page{{max-width:640px;margin:0 auto;padding:20px 16px 40px;box-sizing:border-box;}}
+h1{{font-size:1.25rem;margin:0 0 12px;}}
+.muted{{color:#8b9bb4;font-size:0.88rem;}}
+.card{{background:#1a2332;border-radius:14px;padding:16px 18px;margin:14px 0;border:1px solid rgba(255,255,255,.08);width:100%;}}
+.card h2{{font-size:1.02rem;margin:0 0 10px;color:#a5d8ff;}}
+table.simple{{width:100%;border-collapse:collapse;font-size:0.95rem;}}
+table.simple td{{padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);}}
+table.simple td:first-child{{color:#8b9bb4;width:42%;}}
+a{{color:#7c9cff;}}
+</style></head><body>
+<div class="copytrade-page">
+<h1>跟单简版</h1>
+<p class="muted" style="margin:0 0 8px">币种切换（与决策页同源）</p>
+<p style="margin:0 0 14px">{nav_ct_html}</p>
+<p class="muted" style="margin-bottom:14px">新基线说明：净口径统计建议以<strong>当前阶段起</strong>自行记日；历史完整样本仍在 <code>trade_memory.json</code> / 回测输出中可查，未删除。</p>
+<div class="card">
+<h2>信号与建议</h2>
+<table class="simple">
+<tr><td>当前信号</td><td><b>{sig}</b></td></tr>
+<tr><td>参考方向</td><td><b>{html.escape(side)}</b>（与系统快照价位方向一致）</td></tr>
+<tr><td>说明</td><td>{html.escape(adv)}</td></tr>
+</table>
+</div>
+<div class="card">
+<h2>参考价位（主观察池固定比例快照）</h2>
+<table class="simple">
+<tr><td>现价（约）</td><td><b>{html.escape(px_s)}</b> USDT</td></tr>
+<tr><td>入场（参考）</td><td>{html.escape(str(entry if entry is not None else "—"))}</td></tr>
+<tr><td>SL</td><td>{html.escape(str(sl if sl is not None else "—"))}</td></tr>
+<tr><td>TP1</td><td>{html.escape(str(tp1 if tp1 is not None else "—"))}</td></tr>
+<tr><td>TP2</td><td>{html.escape(str(tp2 if tp2 is not None else "—"))}</td></tr>
+<tr><td>RR（毛）</td><td>{html.escape(rr_line)}</td></tr>
+</table>
+</div>
+<div class="card">
+<h2>实时仓位管理建议（比例供口头带单）</h2>
+{pos_html}
+</div>
+<div class="card">
+<h2>行情 / 模板（摘要）</h2>
+<p style="margin:0;line-height:1.65">行情（Markov）：{mk}</p>
+<p style="margin:10px 0 0;line-height:1.65">策略模板：{tpl}</p>
+</div>
+<p class="muted">风险提示：高杠杆请严格执行止损，不可重仓扛单；本页为辅助展示，非投资建议。</p>
+<p><a href="/decision?symbol={qsym}">打开完整决策页</a></p>
+<div class="muted" style="margin-top:20px;font-size:0.82rem;">约 45 秒自动刷新本页</div>
+<script>
+setTimeout(function(){{ window.location.href = "/copytrade?symbol={qsym}"; }}, 45000);
+</script>
+</div>
+</body></html>"""
+    return HTMLResponse(content=body)
 
 
 if __name__ == "__main__":

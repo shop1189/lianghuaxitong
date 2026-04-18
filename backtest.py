@@ -8,6 +8,7 @@
 - 入场：与决策页同一套轻量信号核（RSI + 多周期 trend 词 + AdvancedIndicatorEngine 计分 → 强/轻标签）
 
 输出：trades.csv + summary.json（默认 outputs/backtest/）
+净口径：单笔净盈亏% = 毛盈亏% − 双边手续费（默认 0.16%，与主系统文案一致）。
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import argparse
 import csv
 import json
 import os
+import statistics
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +40,52 @@ from utils.trade_exit_rules import first_exit_tick
 
 _REPO = Path(__file__).resolve().parent
 _ADV = AdvancedIndicatorEngine(max_bars=300)
+# 与 live_trading 手续费口径一致（双边合计百分点）
+_BACKTEST_FEE_PCT = 0.16
+
+
+def _trade_stats_extended(trades: List[Dict[str, Any]], fee_pct: float = _BACKTEST_FEE_PCT) -> Dict[str, Any]:
+    """毛/净胜率、净盈亏汇总、净值简单回撤、逐笔净收益 Sharpe（样本内）。"""
+    if not trades:
+        return {
+            "win_rate_gross_pct": 0.0,
+            "win_rate_net_pct": 0.0,
+            "avg_net_profit_pct": 0.0,
+            "sum_net_profit_pct": 0.0,
+            "max_drawdown_net_pct": 0.0,
+            "sharpe_net": 0.0,
+        }
+    gross = [float(t["profit_pct"]) for t in trades]
+    nets = [g - fee_pct for g in gross]
+    n = len(trades)
+    wins_g = sum(1 for g in gross if g > 0)
+    wins_n = sum(1 for x in nets if x > 0)
+    wr_g = round(wins_g / n * 100, 2)
+    wr_n = round(wins_n / n * 100, 2)
+    avg_net = round(sum(nets) / n, 4)
+    sum_net = round(sum(nets), 4)
+    eq = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    for x in nets:
+        eq += x
+        peak = max(peak, eq)
+        max_dd = max(max_dd, peak - eq)
+    max_dd = round(max_dd, 4)
+    if len(nets) > 1:
+        m = statistics.mean(nets)
+        s = statistics.stdev(nets)
+        sharpe = round(m / s * (len(nets) ** 0.5), 4) if s > 1e-12 else 0.0
+    else:
+        sharpe = 0.0
+    return {
+        "win_rate_gross_pct": wr_g,
+        "win_rate_net_pct": wr_n,
+        "avg_net_profit_pct": avg_net,
+        "sum_net_profit_pct": sum_net,
+        "max_drawdown_net_pct": max_dd,
+        "sharpe_net": sharpe,
+    }
 
 
 def _ohlcv_to_klines(rows: List[List[Any]]) -> List[Dict[str, Any]]:
@@ -113,6 +161,7 @@ def _experiment_km_for_backtest_bar(
     *,
     markov_tracker: RegimeMarkovTracker,
     markov_template: str,
+    use_markov_threshold_template: bool = False,
 ) -> Dict[str, Any]:
     """与线上一致：实验轨 + kronos_light 筛选 + Markov（内存 tracker，不写 logs）。"""
     rsi_1m = 50.0
@@ -176,6 +225,7 @@ def _experiment_km_for_backtest_bar(
         prob_down=prob_down,
         markov_tracker=markov_tracker,
         markov_template=markov_template,
+        force_markov_threshold_template=use_markov_threshold_template,
     )
 
 
@@ -261,6 +311,8 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
     markov_tracker: Optional[RegimeMarkovTracker] = (
         RegimeMarkovTracker() if level_mode == "experiment" else None
     )
+    use_tpl = bool(getattr(args, "use_markov_threshold_template", False))
+    last_exp_entry_ms = 0
 
     for i in range(warmup, len(rows)):
         ts, o, h, l, c, _v = rows[i]
@@ -313,6 +365,7 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
 
         sub_k = klines_full[: i + 1]
         sub_c = closes_full[: i + 1]
+        km_bar: Optional[Dict[str, Any]] = None
         if level_mode == "experiment":
             assert markov_tracker is not None
             km_bar = _experiment_km_for_backtest_bar(
@@ -321,9 +374,14 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
                 sub_c,
                 markov_tracker=markov_tracker,
                 markov_template=markov_tpl,
+                use_markov_threshold_template=use_tpl,
             )
             if not _experiment_entry_filter_kronos_light(km_bar):
                 continue
+            if km_bar.get("experiment_markov_template_enabled"):
+                mf = float(km_bar.get("experiment_markov_max_frequency_sec") or 0.0)
+                if mf > 0 and (t_ms - last_exp_entry_ms) < mf * 1000:
+                    continue
             sig = str(km_bar.get("signal_label") or "")
             want = _direction_from_sig(sig)
             if want is None:
@@ -354,6 +412,10 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
             "tp3": tp3,
             "signal_label": sig,
         }
+        if km_bar and km_bar.get("experiment_markov_template_enabled"):
+            mf = float(km_bar.get("experiment_markov_max_frequency_sec") or 0.0)
+            if mf > 0:
+                last_exp_entry_ms = t_ms
 
     if pos is not None:
         ts, _o, _h, _l, c, _v = rows[-1]
@@ -380,7 +442,8 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
     out_dir = (Path(args.out_dir) if Path(args.out_dir).is_absolute() else _REPO / args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     mtag = "" if (level_mode != "experiment" or markov_tpl == "off") else f"_mt{markov_tpl}"
-    stem = f"{prefix}_{sym_safe}_{level_mode}_cd{cooldown}{mtag}"
+    mtpl = "_mtpl1" if (level_mode == "experiment" and use_tpl) else ""
+    stem = f"{prefix}_{sym_safe}_{level_mode}_cd{cooldown}{mtag}{mtpl}"
 
     csv_path = out_dir / f"{stem}_trades.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
@@ -410,12 +473,15 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
         b = str(t.get("bracket") or "")
         brackets[b] = brackets.get(b, 0) + 1
 
+    ext = _trade_stats_extended(trades)
     summary = {
         "symbol": symbol,
         "timeframe": args.timeframe,
         "limit": int(args.limit),
         "level_mode": level_mode,
         "markov_template": markov_tpl if level_mode == "experiment" else "n/a",
+        "use_markov_threshold_template": bool(use_tpl) if level_mode == "experiment" else False,
+        "markov_optimized": "1" if (level_mode == "experiment" and use_tpl) else "0",
         "entry_cooldown_bars": cooldown,
         "max_hold_bars": max_hold,
         "require_strong": bool(args.require_strong),
@@ -425,6 +491,7 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
         "win_rate_pct": wr,
         "sum_profit_pct": sum_pnl,
         "brackets": brackets,
+        **ext,
     }
     try:
         summary["trades_csv"] = str(csv_path.relative_to(_REPO))
@@ -456,6 +523,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="off",
         choices=("off", "strict_chop", "balanced"),
         help="实验轨 Markov 阈值模板（仅 level-mode=experiment；回测用内存转移，不写 logs）",
+    )
+    p.add_argument(
+        "--use-markov-threshold-template",
+        action="store_true",
+        help="实验轨：按当前 chop/mid/trend 启用策略层阈值模板（与 LONGXIA_USE_MARKOV_THRESHOLD_TEMPLATE=1 对齐）",
     )
     return p
 
