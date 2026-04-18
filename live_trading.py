@@ -1,7 +1,17 @@
 """
 实盘 / 决策快照：5m K 与决策页数据（V3.16 Gate.io CCXT）。
 V3.16.5+：高级指标、形态融合、贝叶斯轻量、虚拟单本地写入（修正做空 SL/TP）。
-规则实验轨：sync_experiment_track_from_snapshot — 独立筛选 + 较宽 SL/TP，写入非 virtual_signal；见环境变量 LONGXIA_EXPERIMENT_*。
+规则实验轨：sync_experiment_track_from_snapshot — 独立筛选 + 较宽 SL/TP，写入非 virtual_signal。
+
+环境变量速查（规则实验轨 / Kronos-light，重启进程生效）：
+  LONGXIA_EXPERIMENT_TRACK     关：0|false|no|off；默认开启
+  LONGXIA_EXPERIMENT_MODE      kronos_light（默认）| legacy | kronos_model（未接真模型时同 light）
+  LONGXIA_KRONOS_MIN_CONSISTENCY   Kronos-light：|一致性| 门槛，默认 0.08
+  LONGXIA_KRONOS_MIN_PROB_EDGE     Kronos-light：涨跌概率差（百分点），默认 1.5
+  LONGXIA_EXPERIMENT_MIN_CONSISTENCY / LONGXIA_EXPERIMENT_MIN_BAYES  仅 legacy 使用
+  LONGXIA_EXPERIMENT_SL_PCT / TP1_PCT / TP2_PCT / TP3_PCT  实验轨止损止盈比例
+  LONGXIA_EXPERIMENT_SCAN_INTERVAL_SEC  后台全币种扫描间隔（秒），下限约 15
+可选真 Kronos：integrations/kronos_experiment_optional.py（未接模型前勿依赖 kronos_model）。
 """
 from __future__ import annotations
 import html
@@ -358,6 +368,59 @@ def ensure_trading_theory_library() -> None:
         },
     }
     _THEORY_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_theory_books() -> Dict[str, List[str]]:
+    """五书 + Hermes 技能库节选（digest）；不写 trade_memory。"""
+    ensure_trading_theory_library()
+    try:
+        raw = json.loads(_THEORY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        raw = {}
+    books: Dict[str, List[str]] = dict(raw.get("books") or {})
+    try:
+        from utils.hft_skill_brain import load_hermes_digest_lines
+
+        hermes_lines = load_hermes_digest_lines()
+    except Exception:
+        hermes_lines = []
+    if hermes_lines:
+        books["Hermes_HFT技能库"] = hermes_lines
+    return books
+
+
+def _pick_theory_hints(
+    symbol: str,
+    rsi_1m: float,
+    books: Dict[str, List[str]],
+) -> str:
+    """按当前上下文从五本书 + Hermes 节选各抽 0～2 条短句，供手动跟单对照（参考）。"""
+    hints: List[str] = []
+    order = [
+        "日本蜡烛图技术",
+        "裸K线交易法",
+        "短线交易秘诀",
+        "以交易为生",
+        "专业投机原理",
+    ]
+    for title in order:
+        rows = books.get(title) or []
+        if not rows:
+            continue
+        i = (abs(hash(str(symbol))) + int(rsi_1m * 10)) % len(rows)
+        hints.append(f"【{title}】{rows[i]}")
+    hft_rows = books.get("Hermes_HFT技能库") or []
+    if hft_rows:
+        i1 = (abs(hash(str(symbol))) + int(rsi_1m)) % len(hft_rows)
+        hints.append(f"【Hermes_HFT技能库】{hft_rows[i1]}")
+        if len(hft_rows) > 1:
+            i2 = (i1 + 7) % len(hft_rows)
+            hints.append(f"【Hermes_HFT技能库·补】{hft_rows[i2]}")
+    if not hints:
+        return "（当前未命中额外抽书条款；规则仍以指标与形态为准）"
+    return " ".join(hints)
+
+
 # ---------------------------------------------------------------------------
 # 贝叶斯 Beta（轻量，与 45s 刷新对齐节流）
 # ---------------------------------------------------------------------------
@@ -549,7 +612,15 @@ def _price_levels_self_check(
     return False
 
 
-def _experiment_entry_filter(km: Dict[str, Any]) -> bool:
+def _experiment_mode_normalized() -> str:
+    m = os.environ.get("LONGXIA_EXPERIMENT_MODE", "kronos_light").strip().lower()
+    if m in ("legacy", "kronos_light", "kronos_model"):
+        return m
+    return "kronos_light"
+
+
+def _experiment_entry_filter_legacy(km: Dict[str, Any]) -> bool:
+    """旧版实验轨：强一致性 + 贝叶斯（偏严，易长时间无单）。"""
     sig = str(km.get("signal_label") or "")
     if not (sig.startswith("偏多") or sig.startswith("偏空")):
         return False
@@ -568,6 +639,41 @@ def _experiment_entry_filter(km: Dict[str, Any]) -> bool:
     if post < min_b:
         return False
     return True
+
+
+def _experiment_entry_filter_kronos_light(km: Dict[str, Any]) -> bool:
+    """Kronos-light：不卡贝叶斯/价位自检；偏多偏空 + 一致性或涨跌概率差（与快照字段对齐，不加载 HF 模型）。"""
+    sig = str(km.get("signal_label") or "")
+    if not (sig.startswith("偏多") or sig.startswith("偏空")):
+        return False
+    try:
+        cs = float(km.get("consistency_score") or 0.0)
+    except Exception:
+        cs = 0.0
+    min_c = float(os.environ.get("LONGXIA_KRONOS_MIN_CONSISTENCY", "0.08"))
+    if abs(cs) >= min_c:
+        return True
+    try:
+        pu = float(km.get("prob_up_5m") or 0.0)
+        pd = float(km.get("prob_down_5m") or 0.0)
+    except Exception:
+        pu, pd = 0.0, 0.0
+    edge = float(os.environ.get("LONGXIA_KRONOS_MIN_PROB_EDGE", "1.5"))
+    if sig.startswith("偏多") and (pu - pd) >= edge:
+        return True
+    if sig.startswith("偏空") and (pd - pu) >= edge:
+        return True
+    return False
+
+
+def _experiment_entry_filter(km: Dict[str, Any]) -> bool:
+    mode = _experiment_mode_normalized()
+    if mode == "legacy":
+        return _experiment_entry_filter_legacy(km)
+    if mode == "kronos_model":
+        # 第二阶段：接 integrations.kronos_experiment_optional；未实现前与 kronos_light 一致
+        return _experiment_entry_filter_kronos_light(km)
+    return _experiment_entry_filter_kronos_light(km)
 
 
 def sync_experiment_track_from_snapshot(
@@ -603,8 +709,10 @@ def sync_experiment_track_from_snapshot(
     except Exception:
         entry = pxf
     sl, tp1, tp2, tp3 = _experiment_levels_for_direction(entry, direction)
-    if not _price_levels_self_check(entry, direction, sl, tp1, tp2, tp3):
-        return
+    mode = _experiment_mode_normalized()
+    if mode == "legacy":
+        if not _price_levels_self_check(entry, direction, sl, tp1, tp2, tp3):
+            return
     ai_evo.tick(pxf, sym)
     for t in ai_evo.memory.open_trades:
         if str(t.get("symbol") or "").strip() == sym:
@@ -835,6 +943,15 @@ def get_v313_decision_snapshot(
     except Exception:
         if entry > 0:
             _sync_virtual_closeouts_for_price(float(entry))
+    books_ctx = _load_theory_books()
+    theory_book_hints_text = _pick_theory_hints(symbol, rsi_1m, books_ctx)
+    brain_meta: Dict[str, Any] = {}
+    try:
+        from utils.hft_skill_brain import snapshot_brain_meta
+
+        brain_meta = snapshot_brain_meta()
+    except Exception:
+        pass
     return {
         "symbol": symbol,
         "prediction_cycle": "下一根 5 分钟 K线",
@@ -876,6 +993,8 @@ def get_v313_decision_snapshot(
         "spot_ticker_price_str": spot_price,
         "futures_ticker_price_str": futures_price,
         "ticker_display_lines": ticker_lines_text,
+        "theory_book_hints_text": theory_book_hints_text,
+        **brain_meta,
     }
 def sync_virtual_memos_from_state(symbol: str, entry_price: float) -> None:
     _ensure_memos_hotfixes()

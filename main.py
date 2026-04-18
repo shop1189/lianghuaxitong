@@ -633,6 +633,22 @@ def _fmt_klines_impl_line(snap: dict, meta: dict) -> str:
     return f"单次拉取最近 {n_str} 根 · 数据源 {src}"
 
 
+def _hft_brain_row(km: dict) -> str:
+    """Hermes 技能库节选入脑状态（仅展示，不下单）。"""
+    try:
+        n = int(km.get("hft_skill_brain_line_count") or 0)
+    except Exception:
+        n = 0
+    sha = str(km.get("hft_skill_brain_sha256") or "").strip()
+    prev = str(km.get("hft_skill_brain_preview") or "").strip()
+    ing = str(km.get("hft_skill_brain_ingested_at") or "").strip()
+    if n <= 0:
+        return "尚未入脑：请先运行 scripts/hft_skill_auto_ingest.py（或配置每日 cron）"
+    short_sha = f"{sha[:12]}…" if len(sha) >= 12 else (sha or "—")
+    pv = (prev[:160] + "…") if len(prev) > 160 else prev
+    return f"节选 {n} 条 · sha256 {short_sha} · 入脑时间 {ing or '—'} · 预览：{pv or '—'}"
+
+
 def _build_v314_signal_block(
     sym: str,
     km: dict,
@@ -1064,6 +1080,8 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <tr><td>能力引擎 · 斐波关键位</td><td>{html.escape(json_dumps_safe(km.get("fib_levels") or {}))}</td></tr>
 <tr><td>能力引擎 · 高级指标引擎</td><td>{html.escape(json_dumps_safe(km.get("advanced_indicators") or {}))}</td></tr>
 <tr><td>决策依据 · 5m K线快照</td><td>{html.escape(json_dumps_safe(km.get("candle_5m") or {}))}</td></tr>
+<tr><td>书本提示（五书节选 + Hermes · 参考）</td><td>{html.escape(_zh_decision_copy(km.get("theory_book_hints_text")))}</td></tr>
+<tr><td>Hermes 技能库（已入脑节选 · 参考）</td><td>{html.escape(_hft_brain_row(km))}</td></tr>
 <tr><td>趋势状态</td><td>{html.escape(_zh_decision_copy(km.get("trend_status")))}</td></tr>
 <tr><td>执行状态 · 信号转单同步</td><td>{html.escape(str(km.get("virtual_order_status", "—")))}</td></tr>
 <tr><td>数据新鲜度 · Gate 现货 ticker 报价时间（北京）</td><td>{html.escape(ticker_quote_bj)}</td></tr>

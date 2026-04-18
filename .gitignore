@@ -11,6 +11,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 
+# Hermes 技能库自动入脑产物（机器本地）
+data/hft_skill_brain_digest.json
+
 # 运行期大文件 / 日志（恢复代码时不必跟这些数据绑死）
 logs/
 *.log
@@ -27,7 +30,11 @@ memos_ref/
 # IDE
 .idea/
 .vscode/
-.cursor/
+.cursor/*
+!.cursor/WORKSPACE_IDENTITY.txt
+!.cursor/HERMES_SESSION_RESTORE.md
+!.cursor/rules/
+!.cursor/rules/**
 
 # 进程号（本地生成）
 *.pid
