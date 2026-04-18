@@ -845,6 +845,30 @@ def _backtest_matrix_report_block() -> str:
         )
     )
 
+    tsu = data.get("template_summary") or {}
+    if isinstance(tsu, dict) and tsu:
+        rows_tpl: List[List[Any]] = []
+        for tpl in sorted(tsu.keys(), key=lambda s: str(s)):
+            m = tsu.get(tpl) or {}
+            if not isinstance(m, dict):
+                continue
+            rows_tpl.append(
+                [
+                    tpl,
+                    m.get("runs"),
+                    m.get("avg_total_trades"),
+                    m.get("avg_win_rate_pct"),
+                    m.get("avg_sum_profit_pct"),
+                ]
+            )
+        chunks.append(
+            _html_table_from_rows(
+                "一（附）实验轨 Markov 模板汇总（仅 experiment 行）",
+                ["模板", "run 数", "平均单量", "平均胜率%", "平均合计盈亏%"],
+                rows_tpl,
+            )
+        )
+
     vp = data.get("vs_previous")
     if isinstance(vp, dict):
         rows_vp: List[List[Any]] = []
@@ -881,6 +905,7 @@ def _backtest_matrix_report_block() -> str:
             [
                 sym,
                 r.get("level_mode"),
+                r.get("markov_template"),
                 r.get("entry_cooldown_bars"),
                 r.get("total_trades"),
                 r.get("win_rate_pct"),
@@ -890,7 +915,7 @@ def _backtest_matrix_report_block() -> str:
     chunks.append(
         _html_table_from_rows(
             "二、各币种最优候选（按胜率为主，需满足 min_trades_report）",
-            ["标的", "模式", "冷却(根)", "单量", "胜率%", "合计盈亏%"],
+            ["标的", "模式", "Markov模板", "冷却(根)", "单量", "胜率%", "合计盈亏%"],
             rows_b,
         )
     )
@@ -903,6 +928,7 @@ def _backtest_matrix_report_block() -> str:
         rows_e.append(
             [
                 r.get("symbol"),
+                r.get("markov_template"),
                 r.get("entry_cooldown_bars"),
                 r.get("exp_trades"),
                 r.get("main_trades"),
@@ -917,6 +943,7 @@ def _backtest_matrix_report_block() -> str:
             "三、同设置下 实验轨 − 主观察（单量/胜率差）",
             [
                 "标的",
+                "Markov模板",
                 "冷却",
                 "实验单量",
                 "主池单量",
@@ -938,6 +965,7 @@ def _backtest_matrix_report_block() -> str:
             [
                 r.get("symbol"),
                 r.get("level_mode"),
+                r.get("markov_template"),
                 r.get("entry_cooldown_bars"),
                 r.get("total_trades"),
                 r.get("win_rate_pct"),
@@ -947,7 +975,7 @@ def _backtest_matrix_report_block() -> str:
     chunks.append(
         _html_table_from_rows(
             "四、全局候选 Top（启发式排序：胜率 × √(单量)）",
-            ["标的", "模式", "冷却(根)", "单量", "胜率%", "合计盈亏%"],
+            ["标的", "模式", "Markov模板", "冷却(根)", "单量", "胜率%", "合计盈亏%"],
             rows_t,
         )
     )
@@ -1278,6 +1306,7 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <tr><td>书本提示（五书节选 + Hermes · 参考）</td><td>{html.escape(_zh_decision_copy(km.get("theory_book_hints_text")))}</td></tr>
 <tr><td>Hermes 技能库（已入脑节选 · 参考）</td><td>{html.escape(_hft_brain_row(km))}</td></tr>
 <tr><td>趋势状态</td><td>{html.escape(_zh_decision_copy(km.get("trend_status")))}</td></tr>
+<tr><td>行情状态（Markov）</td><td>{html.escape(_zh_decision_copy(km.get("markov_regime_line") or "—"))}</td></tr>
 <tr><td>执行状态 · 信号转单同步</td><td>{html.escape(str(km.get("virtual_order_status", "—")))}</td></tr>
 <tr><td>数据新鲜度 · Gate 现货 ticker 报价时间（北京）</td><td>{html.escape(ticker_quote_bj)}</td></tr>
 <tr><td>K 线拉取实现</td><td>{html.escape(klines_impl_line)}</td></tr>

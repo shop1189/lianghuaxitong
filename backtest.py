@@ -25,11 +25,15 @@ import pandas as pd
 from data_fetcher import fetch_ohlcv
 from indicator_upgrade import AdvancedIndicatorEngine, rsi as rsi_series
 from live_trading import (
+    _calc_probs,
+    _experiment_entry_filter_kronos_light,
     _experiment_levels_for_direction,
     _levels_for_direction,
     _sig_label_from_rsi_t5,
     _tf_trend_word,
+    experiment_km_for_bar,
 )
+from utils.market_regime_state import RegimeMarkovTracker
 from utils.trade_exit_rules import first_exit_tick
 
 _REPO = Path(__file__).resolve().parent
@@ -100,6 +104,79 @@ def _compute_sig_label_like_v313(
     elif score <= -0.45 and sig_label == "无":
         sig_label = "偏空（强）"
     return sig_label
+
+
+def _experiment_km_for_backtest_bar(
+    symbol: str,
+    klines: List[Dict[str, Any]],
+    closes: List[float],
+    *,
+    markov_tracker: RegimeMarkovTracker,
+    markov_template: str,
+) -> Dict[str, Any]:
+    """与线上一致：实验轨 + kronos_light 筛选 + Markov（内存 tracker，不写 logs）。"""
+    rsi_1m = 50.0
+    if len(closes) >= 15:
+        s = rsi_series(pd.Series(closes), 14)
+        rsi_1m = float(s.iloc[-1]) if pd.notna(s.iloc[-1]) else 50.0
+    t5 = _tf_trend_word(closes, 5)
+    t1h = _tf_trend_word(closes, 60)
+    t4h = _tf_trend_word(closes, 240)
+    ts_hi = 1 if t1h == "上涨" else (-1 if t1h == "下跌" else 0)
+    ts_4h = 1 if t4h == "上涨" else (-1 if t4h == "下跌" else 0)
+    trend_score = max(-1.0, min(1.0, (ts_hi + ts_4h) / 2))
+    prob_up, prob_down = _calc_probs(rsi_1m, trend_score)
+    adv = _ADV.compute(symbol, klines)
+    score = 0.0
+    st = adv.get("supertrend_pro", {}).get("dir", "")
+    if st == "多头":
+        score += 0.25
+    elif st == "空头":
+        score -= 0.25
+    ema3 = adv.get("ema3_cross", "")
+    if "多头" in str(ema3):
+        score += 0.15
+    if "空头" in str(ema3):
+        score -= 0.15
+    if "上破" in str(adv.get("sar_breaks", "")) or "偏多" in str(adv.get("sar_breaks", "")):
+        score += 0.1
+    if "下破" in str(adv.get("sar_breaks", "")) or "偏空" in str(adv.get("sar_breaks", "")):
+        score -= 0.1
+    if "翻多" in str(adv.get("macd", "")):
+        score += 0.08
+    if "翻空" in str(adv.get("macd", "")):
+        score -= 0.08
+    if rsi_1m < 35:
+        score += 0.12
+    if rsi_1m > 65:
+        score -= 0.12
+    if t5 == "上涨":
+        score += 0.05
+    if t5 == "下跌":
+        score -= 0.05
+    score = max(-1.0, min(1.0, score))
+    sig_label = _sig_label_from_rsi_t5(rsi_1m, t5)
+    if score >= 0.45 and sig_label.startswith("偏多"):
+        sig_label = "偏多（强）"
+    elif score <= -0.45 and sig_label.startswith("偏空"):
+        sig_label = "偏空（强）"
+    elif score >= 0.45 and sig_label == "无":
+        sig_label = "偏多（强）"
+    elif score <= -0.45 and sig_label == "无":
+        sig_label = "偏空（强）"
+    return experiment_km_for_bar(
+        symbol,
+        klines,
+        closes,
+        rsi_1m=rsi_1m,
+        t5=t5,
+        sig_label=sig_label,
+        score=score,
+        prob_up=prob_up,
+        prob_down=prob_down,
+        markov_tracker=markov_tracker,
+        markov_template=markov_template,
+    )
 
 
 def first_exit_ohlc(
@@ -178,6 +255,12 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
 
     cooldown = int(args.entry_cooldown)
     max_hold = int(args.max_hold_bars)
+    markov_tpl = str(getattr(args, "markov_template", "off") or "off").strip().lower()
+    if markov_tpl not in ("off", "strict_chop", "balanced"):
+        markov_tpl = "off"
+    markov_tracker: Optional[RegimeMarkovTracker] = (
+        RegimeMarkovTracker() if level_mode == "experiment" else None
+    )
 
     for i in range(warmup, len(rows)):
         ts, o, h, l, c, _v = rows[i]
@@ -230,10 +313,26 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
 
         sub_k = klines_full[: i + 1]
         sub_c = closes_full[: i + 1]
-        sig = _compute_sig_label_like_v313(symbol, sub_k, sub_c)
-        want = _direction_from_sig(sig)
-        if want is None:
-            continue
+        if level_mode == "experiment":
+            assert markov_tracker is not None
+            km_bar = _experiment_km_for_backtest_bar(
+                symbol,
+                sub_k,
+                sub_c,
+                markov_tracker=markov_tracker,
+                markov_template=markov_tpl,
+            )
+            if not _experiment_entry_filter_kronos_light(km_bar):
+                continue
+            sig = str(km_bar.get("signal_label") or "")
+            want = _direction_from_sig(sig)
+            if want is None:
+                continue
+        else:
+            sig = _compute_sig_label_like_v313(symbol, sub_k, sub_c)
+            want = _direction_from_sig(sig)
+            if want is None:
+                continue
 
         if args.require_strong and ("（强）" not in sig):
             continue
@@ -280,7 +379,8 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
     sym_safe = symbol.replace("/", "-")
     out_dir = (Path(args.out_dir) if Path(args.out_dir).is_absolute() else _REPO / args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"{prefix}_{sym_safe}_{level_mode}_cd{cooldown}"
+    mtag = "" if (level_mode != "experiment" or markov_tpl == "off") else f"_mt{markov_tpl}"
+    stem = f"{prefix}_{sym_safe}_{level_mode}_cd{cooldown}{mtag}"
 
     csv_path = out_dir / f"{stem}_trades.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
@@ -315,6 +415,7 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
         "timeframe": args.timeframe,
         "limit": int(args.limit),
         "level_mode": level_mode,
+        "markov_template": markov_tpl if level_mode == "experiment" else "n/a",
         "entry_cooldown_bars": cooldown,
         "max_hold_bars": max_hold,
         "require_strong": bool(args.require_strong),
@@ -324,8 +425,11 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
         "win_rate_pct": wr,
         "sum_profit_pct": sum_pnl,
         "brackets": brackets,
-        "trades_csv": str(csv_path.relative_to(_REPO)),
     }
+    try:
+        summary["trades_csv"] = str(csv_path.relative_to(_REPO))
+    except ValueError:
+        summary["trades_csv"] = str(csv_path)
     json_path = out_dir / f"{stem}_summary.json"
     json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -347,6 +451,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--out-dir", default="outputs/backtest")
     p.add_argument("--out-prefix", default="", help="文件名前缀（默认 UTC 时间戳）")
+    p.add_argument(
+        "--markov-template",
+        default="off",
+        choices=("off", "strict_chop", "balanced"),
+        help="实验轨 Markov 阈值模板（仅 level-mode=experiment；回测用内存转移，不写 logs）",
+    )
     return p
 
 

@@ -28,6 +28,7 @@ def _run_one(
     entry_cooldown: int,
     max_hold_bars: int,
     require_strong: bool,
+    markov_template: str,
     out_dir: Path,
     prefix: str,
 ) -> Path:
@@ -54,8 +55,15 @@ def _run_one(
     ]
     if require_strong:
         cmd.append("--require-strong")
+    if level_mode == "experiment":
+        cmd.extend(["--markov-template", markov_template])
     subprocess.run(cmd, cwd=str(_REPO), check=True)
-    stem = f"{prefix}_{symbol.replace('/', '-')}_{level_mode}_cd{entry_cooldown}"
+    mtag = (
+        ""
+        if (level_mode != "experiment" or markov_template == "off")
+        else f"_mt{markov_template}"
+    )
+    stem = f"{prefix}_{symbol.replace('/', '-')}_{level_mode}_cd{entry_cooldown}{mtag}"
     return out_dir / f"{stem}_summary.json"
 
 
@@ -86,6 +94,30 @@ def _build_report(rows: List[Dict[str, Any]], min_trades: int) -> Dict[str, Any]
             "avg_sum_profit_pct": round(_avg_mode(mode, "sum_profit_pct"), 4),
         }
 
+    template_summary: Dict[str, Any] = {}
+    exp_rows = [r for r in rows if str(r.get("level_mode") or "") == "experiment"]
+    _tpl_order = {"off": 0, "balanced": 1, "strict_chop": 2, "n/a": 3}
+    tpls = sorted(
+        {str(x.get("markov_template") or "off") for x in exp_rows},
+        key=lambda s: _tpl_order.get(s, 99),
+    )
+    for tpl in tpls:
+        xs = [r for r in exp_rows if str(r.get("markov_template") or "off") == tpl]
+        if not xs:
+            continue
+        template_summary[tpl] = {
+            "runs": len(xs),
+            "avg_total_trades": round(
+                sum(float(x.get("total_trades") or 0) for x in xs) / len(xs), 4
+            ),
+            "avg_win_rate_pct": round(
+                sum(float(x.get("win_rate_pct") or 0) for x in xs) / len(xs), 4
+            ),
+            "avg_sum_profit_pct": round(
+                sum(float(x.get("sum_profit_pct") or 0) for x in xs) / len(xs), 4
+            ),
+        }
+
     best_by_symbol: Dict[str, Any] = {}
     by_sym: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for r in rows:
@@ -106,12 +138,8 @@ def _build_report(rows: List[Dict[str, Any]], min_trades: int) -> Dict[str, Any]
         )
         best_by_symbol[sym] = best
 
-    exp_vs_main: List[Dict[str, Any]] = []
-    groups: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
-    for r in rows:
-        if int(r.get("total_trades") or 0) < min_trades:
-            continue
-        key = (
+    def _setting_key(r: Dict[str, Any]) -> Tuple[Any, ...]:
+        return (
             r.get("symbol"),
             r.get("timeframe"),
             r.get("limit"),
@@ -119,35 +147,49 @@ def _build_report(rows: List[Dict[str, Any]], min_trades: int) -> Dict[str, Any]
             r.get("max_hold_bars"),
             r.get("require_strong"),
         )
-        g = groups.setdefault(key, {})
-        g[str(r.get("level_mode"))] = r
 
-    for key, g in groups.items():
-        if "experiment" in g and "main" in g:
-            e, m = g["experiment"], g["main"]
-            exp_vs_main.append(
-                {
-                    "symbol": key[0],
-                    "timeframe": key[1],
-                    "limit": key[2],
-                    "entry_cooldown_bars": key[3],
-                    "max_hold_bars": key[4],
-                    "require_strong": key[5],
-                    "exp_trades": e.get("total_trades"),
-                    "main_trades": m.get("total_trades"),
-                    "trade_delta": int(e.get("total_trades") or 0)
-                    - int(m.get("total_trades") or 0),
-                    "exp_win_rate": e.get("win_rate_pct"),
-                    "main_win_rate": m.get("win_rate_pct"),
-                    "win_rate_delta": round(
-                        float(e.get("win_rate_pct") or 0)
-                        - float(m.get("win_rate_pct") or 0),
-                        4,
-                    ),
-                    "exp_sum_pnl": e.get("sum_profit_pct"),
-                    "main_sum_pnl": m.get("sum_profit_pct"),
-                }
-            )
+    exp_vs_main: List[Dict[str, Any]] = []
+    main_by_setting: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+    for r in rows:
+        if str(r.get("level_mode") or "") != "main":
+            continue
+        if int(r.get("total_trades") or 0) < min_trades:
+            continue
+        main_by_setting[_setting_key(r)] = r
+
+    for r in rows:
+        if str(r.get("level_mode") or "") != "experiment":
+            continue
+        if int(r.get("total_trades") or 0) < min_trades:
+            continue
+        m = main_by_setting.get(_setting_key(r))
+        if not m:
+            continue
+        e = r
+        exp_vs_main.append(
+            {
+                "symbol": e.get("symbol"),
+                "timeframe": e.get("timeframe"),
+                "limit": e.get("limit"),
+                "entry_cooldown_bars": e.get("entry_cooldown_bars"),
+                "max_hold_bars": e.get("max_hold_bars"),
+                "require_strong": e.get("require_strong"),
+                "markov_template": e.get("markov_template"),
+                "exp_trades": e.get("total_trades"),
+                "main_trades": m.get("total_trades"),
+                "trade_delta": int(e.get("total_trades") or 0)
+                - int(m.get("total_trades") or 0),
+                "exp_win_rate": e.get("win_rate_pct"),
+                "main_win_rate": m.get("win_rate_pct"),
+                "win_rate_delta": round(
+                    float(e.get("win_rate_pct") or 0)
+                    - float(m.get("win_rate_pct") or 0),
+                    4,
+                ),
+                "exp_sum_pnl": e.get("sum_profit_pct"),
+                "main_sum_pnl": m.get("sum_profit_pct"),
+            }
+        )
 
     def _score(x: Dict[str, Any]) -> float:
         tr = int(x.get("total_trades") or 0)
@@ -162,6 +204,7 @@ def _build_report(rows: List[Dict[str, Any]], min_trades: int) -> Dict[str, Any]
 
     return {
         "mode_summary": mode_summary,
+        "template_summary": template_summary,
         "best_by_symbol": best_by_symbol,
         "exp_vs_main_same_setting": exp_vs_main,
         "top_candidates": top_candidates,
@@ -224,7 +267,11 @@ def main() -> None:
     )
     p.add_argument("--timeframes", default="1m")
     p.add_argument("--limit", type=int, default=500)
-    p.add_argument("--level-modes", default="experiment,main")
+    p.add_argument(
+        "--level-modes",
+        default="experiment,main",
+        help="逗号分隔：main / experiment / 组合。仅主池对比可设 main",
+    )
     p.add_argument("--entry-cooldowns", default="3,8")
     p.add_argument("--max-hold-bars", type=int, default=120)
     p.add_argument(
@@ -234,6 +281,12 @@ def main() -> None:
     )
     p.add_argument("--out-dir", default="outputs/backtest_matrix")
     p.add_argument("--min-trades-report", type=int, default=3)
+    p.add_argument(
+        "--markov-templates",
+        default="off",
+        help="逗号分隔；仅对 experiment 展开；main 始终单次。默认 off=每组合只跑一套实验轨；"
+        "与旧矩阵口径接近时可仅填 off",
+    )
     args = p.parse_args()
 
     prefix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -244,25 +297,46 @@ def main() -> None:
     tfs = [s.strip() for s in args.timeframes.split(",") if s.strip()]
     modes = [s.strip() for s in args.level_modes.split(",") if s.strip()]
     cds = [int(s.strip()) for s in args.entry_cooldowns.split(",") if s.strip()]
+    markov_templates = [s.strip() for s in args.markov_templates.split(",") if s.strip()]
+    if not markov_templates:
+        markov_templates = ["off"]
 
     summaries: List[Path] = []
     for sym in symbols:
         for tf in tfs:
             for lm in modes:
                 for cd in cds:
-                    summaries.append(
-                        _run_one(
-                            symbol=sym,
-                            timeframe=tf,
-                            limit=args.limit,
-                            level_mode=lm,
-                            entry_cooldown=cd,
-                            max_hold_bars=args.max_hold_bars,
-                            require_strong=args.require_strong,
-                            out_dir=out_dir,
-                            prefix=prefix,
+                    if lm == "main":
+                        summaries.append(
+                            _run_one(
+                                symbol=sym,
+                                timeframe=tf,
+                                limit=args.limit,
+                                level_mode=lm,
+                                entry_cooldown=cd,
+                                max_hold_bars=args.max_hold_bars,
+                                require_strong=args.require_strong,
+                                markov_template="off",
+                                out_dir=out_dir,
+                                prefix=prefix,
+                            )
                         )
-                    )
+                    else:
+                        for mt in markov_templates:
+                            summaries.append(
+                                _run_one(
+                                    symbol=sym,
+                                    timeframe=tf,
+                                    limit=args.limit,
+                                    level_mode=lm,
+                                    entry_cooldown=cd,
+                                    max_hold_bars=args.max_hold_bars,
+                                    require_strong=args.require_strong,
+                                    markov_template=mt,
+                                    out_dir=out_dir,
+                                    prefix=prefix,
+                                )
+                            )
 
     rows = [_load_summary(x) for x in summaries]
     csv_path = out_dir / f"{prefix}_matrix_summary.csv"

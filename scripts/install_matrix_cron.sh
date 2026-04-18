@@ -17,7 +17,9 @@ TMP="$(mktemp)"
   crontab -l 2>/dev/null | awk -v lb="$LEGACY_B" -v le="$LEGACY_E" -v b="$MARK_B" -v e="$MARK_E" '
     $0==lb || $0==b {skip=1; next}
     $0==le || $0==e {skip=0; next}
-    !skip {print}
+    skip {next}
+    /run_backtest_autotask\.sh/ {next}
+    {print}
   ' || true
   echo "$MARK_B"
   echo "*/15 * * * * /bin/bash $REPO/scripts/run_backtest_autotask.sh lite >> $REPO/logs/backtest_matrix_lite.log 2>&1"

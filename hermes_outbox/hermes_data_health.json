@@ -1,17 +1,17 @@
 {
-  "generated_at_utc": "2026-04-18T09:40:01Z",
-  "availability_verdict": "暂不可用",
-  "next_action": "更新 daily_market_notes.md（含当日/昨日日期或刷新文件）并同步到 Hermes inbox。",
-  "overall_status": "yellow",
+  "generated_at_utc": "2026-04-18T09:50:01Z",
+  "availability_verdict": "可用于策略判断",
+  "next_action": "保持 rsync 与文件更新节奏，下一健康检查周期复查即可。",
+  "overall_status": "green",
   "status_reasons": [
-    "市场笔记日期非今/昨日（以正文日期或文件修改日为准）"
+    "trade_memory.json 可解析且有效成交记录数>0；backtest_result.csv 可解析且含 win_rate/max_drawdown/sharpe/trade_count（或同义列）；meta.json 存在且合法（schema_version + generated_at_utc）；PROJECT_MEMORY.md 存在；daily_market_notes.md 存在且日期为今/昨日"
   ],
   "checks": {
     "trade_memory_json": {
       "ok": true,
       "error": null,
-      "records": 1057,
-      "last_record_time": "2026-04-12"
+      "records": 4451,
+      "last_record_time": "2026-04-18"
     },
     "backtest_result_csv": {
       "ok": true,
@@ -57,13 +57,13 @@
     },
     "project_memory_md": {
       "exists": true,
-      "mtime_iso": "2026-04-12T17:18:34"
+      "mtime_iso": "2026-04-18T16:51:34"
     },
     "daily_market_notes_md": {
       "exists": true,
-      "note_date_parsed": "2026-04-11",
-      "file_date_used": "2026-04-12",
-      "recent_ok": false
+      "note_date_parsed": "2026-04-18",
+      "file_date_used": "2026-04-18",
+      "recent_ok": true
     },
     "meta_json": {
       "present": true,
@@ -84,6 +84,6 @@
     }
   },
   "constraints": "no_trading_advice_no_strategy_recommendation",
-  "green_ready": false,
-  "green_ready_path": null
+  "green_ready": true,
+  "green_ready_path": "/opt/hermes-sync/outbox/GREEN_READY"
 }
