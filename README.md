@@ -20,6 +20,7 @@
 | Hermes 与量化协同边界 | `docs/hermes_synergy_framework.md` |
 | 决策页、虚拟单、**规则实验轨**环境变量 | `live_trading.py` 文件顶部注释 |
 | Hermes HFT 技能库自动入脑（cron） | `scripts/hft_skill_auto_ingest.py`、`docs/quant_hft_skill_consensus_v1.md` |
+| 阶段 1 健康快检 | `scripts/phase1_health_check.py` |
 | Web 入口 | `main.py`（`/decision` 决策看板） |
 | 对外版本（监控 / curl） | `GET /api/version` → JSON `engine` = **V3.17.0** |
 

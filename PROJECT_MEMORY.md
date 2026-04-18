@@ -34,6 +34,14 @@
 
 - **同源平仓判定**：`utils/trade_exit_rules.py`（`first_exit_tick`）；`evolution_core.TradeMemory.check_close_trade` 与 `live_trading._virtual_hit_and_close` 统一调用。虚拟单 **做空** 盈亏 % 与原先手写分支若不一致，以 **evolution_core 公式** 为准（属同源对齐）。详见 **`docs/upgrade_framework_merged_v1.md` §7**。
 
+## 3.3) 合并升级 v1 收口（2026-04-18）
+
+- **主线默认**：**A（工程向）**——与「同源平仓 + 后续回测入口」一致；若改为体验向 **B** 或合并 **C**，请改本行并同步 **`docs/upgrade_framework_merged_v1.md` §5**。  
+- **长路线图**：`docs/upgrade_roadmap_v1.md`（短表已定稿，非占位一句）。  
+- **健康快检**：`scripts/phase1_health_check.py`（`trade_memory` / `live_trading_state` / `pandas_ta`）。  
+- **备份（收口前一刻）**：标签 **`restore-pre-upgrade-wrapup-2026-04-18`**；离线包 `/root/longxia_backups/longxia_system-restore-pre-upgrade-wrapup-2026-04-18.tar.gz`。  
+- **修补**：文档约定中的「后续小改、Hermes 版式、策略向 B」等，**不**与本节同一批次强绑；按 `UPGRADE_PLAN` 阶段 B～D 另排期。
+
 ## 4) Hermes 技能包 · 自动入脑（可选 cron）
 
 | 目的 | 路径 |

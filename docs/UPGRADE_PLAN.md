@@ -38,7 +38,8 @@
 ## 路线图长文
 
 - 合并表与选项 A/B/C：[`upgrade_framework_merged_v1.md`](upgrade_framework_merged_v1.md)  
-- 长路线图占位：[`upgrade_roadmap_v1.md`](upgrade_roadmap_v1.md)  
+- 长路线图（短表已定稿）：[`upgrade_roadmap_v1.md`](upgrade_roadmap_v1.md)  
+- 健康快检：`scripts/phase1_health_check.py`（交易记忆 / state / pandas_ta）  
 
 ---
 

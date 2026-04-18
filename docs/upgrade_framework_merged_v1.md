@@ -31,7 +31,7 @@
 | 仓库文档 | 内容 |
 |----------|------|
 | **`docs/UPGRADE_PLAN.md`** | 阶段 A～E：入口、Agent 文档、Kronos、动态仓位等 **工程分期** |
-| **`docs/upgrade_roadmap_v1.md`** | 若存在：样本期→回测同源→马尔可夫→实验账本等 **策略/工程长路线图**；若未落盘，以 `UPGRADE_PLAN` 与本文为准 |
+| **`docs/upgrade_roadmap_v1.md`** | 样本期→工程对齐→回测记忆→自动化→体验扩展（**已落盘短表**） |
 
 ---
 
@@ -43,15 +43,15 @@
 | **B（体验）** | 你的 **阶段1** 一包：指标展示 + 书库扩展 + SL/TP 文案/体验 | 少量文件、可对照页面 |
 | **C（合并）** | A 与 B 合成一个里程碑 | 范围冻结后写清验收 |
 
-**当前默认（工程切片已起步）**：优先 **A** 中与「平仓判定同源」相关项（见 §7）。
+**当前默认（工程切片已起步）**：优先 **A** 中与「平仓判定同源」相关项（见 §7）。**书面冻结**：默认主线记为 **A**，若改 **B/C** 须在 `PROJECT_MEMORY.md` 更新一行并改 §5 勾选。
 
 ---
 
 ## 5) 启动前简表（组织条件）
 
-- [ ] 主线选项 **A / B / C** 书面选定（本文件或 `PROJECT_MEMORY` 一行）  
-- [ ] 日更笔记 / Hermes 契约：若仍用 `docs/daily_market_notes.md`，日期保持当日或昨日  
-- [ ] 依赖：`pandas-ta` 等可选组件见 `phase1_health_check` / `indicator_upgrade`
+- [x] 主线选项 **A / B / C**：**默认 A（工程）** 已写入 `PROJECT_MEMORY.md` §3.3（可改为 B/C 并同步本文）  
+- [x] 日更笔记：`docs/daily_market_notes.md` 已建立并滚动日期（Hermes 契约若启用请保持）  
+- [x] 依赖：`pandas-ta` 已在 venv 安装；快速检查见 **`scripts/phase1_health_check.py`**
 
 ---
 
@@ -64,6 +64,7 @@
 | `live_trading.py` | 虚拟单 `_virtual_hit_and_close` 调用同源规则 |
 | `docs/UPGRADE_PLAN.md` | 工程分期 |
 | `docs/daily_market_notes.md` | 日更笔记（Hermes/健康契约辅助） |
+| `scripts/phase1_health_check.py` | 交易记忆 / state / pandas_ta 快速检查 |
 
 ---
 
@@ -73,6 +74,7 @@
 |------|-----|------|
 | **2026-04-18** | **同源平仓判定** | 抽出 `utils/trade_exit_rules.py`；`evolution_core.check_close_trade` 与 `live_trading._virtual_hit_and_close` 统一为 `first_exit_tick`；**做空虚拟盈亏口径**与原先 `live_trading` 手写式对齐为 **evolution_core 公式**（属同源修正，非改策略意图）。 |
 | **2026-04-18** | **合并稿落盘** | 本文 + `docs/daily_market_notes.md` 更新；`README` / `PROJECT_MEMORY` 互链。 |
+| **2026-04-18** | **升级 v1 收口** | `upgrade_roadmap_v1` 短表定稿；`phase1_health_check.py`；主线默认 **A** 写入 `PROJECT_MEMORY`；备份标签 `restore-pre-upgrade-wrapup-2026-04-18`。 |
 
 ---
 
