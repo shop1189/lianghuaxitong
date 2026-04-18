@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "risk_level": "medium",
+  "trade_style": "swing",
+  "position_size": "medium",
+  "max_stop_loss_pct": 0.3,
+  "preferred_leverage": 100,
+  "custom_note": ""
+}

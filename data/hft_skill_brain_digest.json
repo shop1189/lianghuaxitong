@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "source_sha256": "68355fbbaae8988fa12266853355d47d8b6d468f39309fd838d81d9eaa167ec5",
+  "exported_at_utc": "2026-04-14T01:05:01Z",
+  "ingested_at_utc": "2026-04-14T01:12:01Z",
+  "line_count": 14,
+  "lines": [
+    "name: hft-strategy-skill-library",
+    "description: Rolling library of global quant/HFT/short-term/crypto strategy skill entries (English-first sources), updated by scheduled runs",
+    "version: 1.0.0",
+    "metadata:",
+    "tags: [quant, hft, crypto, strategies, skill-library]",
+    "related_skills: []",
+    "HFT / Quant Strategy Skill Library",
+    "Store **deduplicated skill entries** sourced from public English material (papers, blogs, GitHub, forums). Each run **appends or patches** this file under ## Entries using skill_manage (patch preferred).",
+    "Entry template (one block per skill)",
+    "Update rules",
+    "- Prefer **patch** to insert under ## Entries; use **edit** only for large restructuring.",
+    "- Count **new or materially changed** entries for the daily Telegram summary.",
+    "- Never output API keys, account details, or executable trade parameters.",
+    "_(Scheduled job will append here.)_"
+  ]
+}

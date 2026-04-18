@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>🦞 OpenClaw 龙虾系统 - 可视化满血版</title>
+    <style>
+        body { font-family: "Microsoft YaHei", Arial, sans-serif; background: #0a0a0a; color: #fff; text-align: center; padding: 30px; }
+        h1 { color: #00ff00; font-size: 42px; }
+        .price { font-size: 52px; color: #ffff00; }
+        .decision { font-size: 26px; background: #1f1f1f; padding: 20px; border-radius: 12px; max-width: 900px; margin: 20px auto; }
+        .status { font-size: 28px; margin: 30px 0; }
+        .green { color: #00ff00; }
+        .yellow { color: #ffaa00; }
+        .red { color: #ff0000; }
+        .chat-box { background: #1f1f1f; padding: 30px; max-width: 800px; margin: 30px auto; border-radius: 15px; border: 3px solid #00ff00; }
+        input { width: 75%; padding: 15px; font-size: 18px; background: #0a0a0a; color: #fff; border: 2px solid #00ff00; }
+        button { padding: 15px 40px; font-size: 18px; background: #00ff00; color: #000; border: none; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>🦞 OpenClaw 龙虾系统 - 可视化满血版</h1>
+    <p class="price">当前 BTC 价格: <span id="current_price">{CURRENT_PRICE}</span></p>
+    <div class="decision"><strong>AI最终决策：</strong><br>{DECISION}</div>
+    <div class="status">
+        <p id="status_normal" class="green" style="{STATUS_NORMAL}">行情正常 ✅</p>
+        <p id="status_warning" class="yellow" style="{STATUS_WARNING}">有反转迹象，准备平仓 ⚠️</p>
+        <p id="status_danger" class="red" style="{STATUS_DANGER}">行情反转，立即平仓 🚨</p>
+    </div>
+    <div class="chat-box">
+        <h3>🔥 输入自然语言跟龙虾AI对话</h3>
+        <form action="/chat" method="post">
+            <input type="text" name="prompt" placeholder="现在买还是卖？带精确入场价、止盈止损、分批点位" required>
+            <button type="submit">发送 → AI决策</button>
+        </form>
+    </div>
+</body>
+</html>

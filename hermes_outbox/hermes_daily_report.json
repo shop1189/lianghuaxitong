@@ -1,0 +1,33 @@
+{
+  "generated_at_utc": "2026-04-10T15:38:02Z",
+  "source_paths": {
+    "trade_memory": "/opt/hermes-sync/inbox/trade_memory.json",
+    "backtest_result": "/opt/hermes-sync/inbox/backtest_result.csv",
+    "project_memory": "/opt/hermes-sync/inbox/PROJECT_MEMORY.md",
+    "daily_market_notes": "/opt/hermes-sync/inbox/daily_market_notes.md"
+  },
+  "trading_overview": {
+    "trade_count": 0,
+    "long_short_ratio": null,
+    "win_rate": null,
+    "notes": "trade_memory.json is empty object; no fills to analyze"
+  },
+  "backtest_summary": {
+    "win_rate": null,
+    "max_drawdown": null,
+    "sharpe": null,
+    "trade_count": null,
+    "notes": "backtest_result.csv not parseable as full metrics table"
+  },
+  "risk_warnings": [
+    "Source files are placeholder or empty; do not rely on metrics until real data is synced.",
+    "Zero trades: strategy performance and risk cannot be extrapolated.",
+    "Rotate API tokens and audit SSH keys for sync paths periodically."
+  ],
+  "tomorrow_actions": [
+    "Ensure quant host writes real trade_memory.json and backtest_result.csv before next report.",
+    "Add strategy context to PROJECT_MEMORY.md and daily_market_notes.md for richer summaries.",
+    "Define CSV columns for win_rate, max_drawdown, sharpe, trade_count for automated parsing."
+  ],
+  "generated": true
+}

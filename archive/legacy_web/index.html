@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="60">
+    <title>OpenClaw AI交易助手</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400,500,600,700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            background: #ffffff;
+            color: #374151;
+            line-height: 1.6;
+        }
+        .header {
+            background: #ffffff;
+            border-bottom: 1px solid #e5e7eb;
+            padding: 16px 24px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .header-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 20px;
+            font-weight: 700;
+            color: #111827;
+        }
+        .logo-icon {
+            font-size: 28px;
+        }
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: #f3f4f6;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+            color: #6b7280;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: #10a37f;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 32px 24px;
+        }
+        .price-card {
+            background: linear-gradient(135deg, #111827 0%, #1f2937 100%);
+            border-radius: 16px;
+            padding: 32px;
+            margin-bottom: 24px;
+            color: white;
+            text-align: center;
+        }
+        .price-label {
+            font-size: 14px;
+            font-weight: 500;
+            color: #9ca3af;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        .price-value {
+            font-size: 56px;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 16px;
+        }
+        .price-sub {
+            font-size: 14px;
+            color: #9ca3af;
+        }
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .metric-card {
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .metric-card.highlight {
+            background: #ffffff;
+            border: 2px solid #10a37f;
+        }
+        .metric-card.warning {
+            background: #fff7ed;
+            border: 1px solid #fed7aa;
+        }
+        .metric-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #111827;
+        }
+        .metric-sub {
+            font-size: 13px;
+            color: #6b7280;
+            margin-top: 4px;
+        }
+        .decision-card {
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+        .decision-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #f3f4f6;
+        }
+        .decision-icon {
+            width: 40px;
+            height: 40px;
+            background: #10a37f;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            color: white;
+        }
+        .decision-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #111827;
+        }
+        .decision-content {
+            font-size: 15px;
+            line-height: 1.8;
+            color: #374151;
+            white-space: pre-wrap;
+        }
+        .section {
+            margin-bottom: 24px;
+        }
+        .section-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+            padding-left: 4px;
+        }
+        .form-card {
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 24px;
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .form-label {
+            font-size: 13px;
+            font-weight: 500;
+            color: #374151;
+        }
+        .form-select, .form-input {
+            padding: 10px 14px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+            background: #ffffff;
+            color: #111827;
+            transition: border-color 0.2s;
+        }
+        .form-textarea {
+            width: 100%;
+            min-height: 80px;
+            padding: 12px 14px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+            resize: vertical;
+            font-family: inherit;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 12px 24px;
+            background: #111827;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn-primary {
+            background: #10a37f;
+        }
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 48px;
+            height: 26px;
+        }
+        .toggle-switch input { opacity: 0; }
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: #d1d5db;
+            transition: .3s;
+            border-radius: 26px;
+        }
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 20px; width: 20px;
+            left: 3px; bottom: 3px;
+            background: white;
+            transition: .3s;
+            border-radius: 50%;
+        }
+        .toggle-switch input:checked + .toggle-slider {
+            background: #10a37f;
+        }
+        .toggle-switch input:checked + .toggle-slider:before {
+            transform: translateX(22px);
+        }
+        .footer {
+            text-align: center;
+            padding: 24px;
+            font-size: 12px;
+            color: #9ca3af;
+            border-top: 1px solid #e5e7eb;
+        }
+        @media (max-width: 640px) {
+            .price-value { font-size: 40px; }
+            .metrics-grid, .form-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <span class="logo-icon">🦞</span>
+                <span>OpenClaw 龙虾系统</span>
+            </div>
+            <div class="status-badge">
+                <span class="status-dot"></span>
+                <span>系统运行中</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- 价格 -->
+        <div class="price-card">
+            <div class="price-label">比特币价格</div>
+            <div class="price-value">$ {btc_price:,.2f}</div>
+            <div class="price-sub">实时数据 · 币安</div>
+        </div>
+
+        <!-- 数据面板 -->
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">恐惧贪婪指数</div>
+                <div class="metric-value" style="color:{sentiment_color};">{fear_greed}</div>
+                <div class="metric-sub">{sentiment_text}</div>
+            </div>
+
+            {f'''
+            <div class="metric-card highlight">
+                <div class="metric-label">当前持仓</div>
+                <div class="metric-value">{entry.get('side', '做多')}</div>
+                <div class="metric-sub">${entry.get('entry_price', 0):,.2f} · {pnl_html}</div>
+            </div>
+            ''' if entry else ''}
+
+            <div class="metric-card {('warning' if reversal else '')}">
+                <div class="metric-label">状态</div>
+                <div class="metric-value" style="color: {'#ef4146' if reversal else '#10a37f'};">{reversal_status}</div>
+                <div class="metric-sub">止损设定: {prefs.get('max_stop_loss_pct', 2.0)}%</div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-label">风险偏好</div>
+                <div class="metric-value">{risk_cn}</div>
+                <div class="metric-sub">{style_cn} · {prefs.get('max_stop_loss_pct', 2.0)}% 止损</div>
+            </div>
+        </div>
+
+        <!-- AI 决策 -->
+        <div class="decision-card">
+            <div class="decision-header">
+                <div class="decision-icon">🤖</div>
+                <div class="decision-title">AI 交易决策</div>
+            </div>
+            <div class="decision-content">{decision}</div>
+        </div>
+
+        <!-- 🔥 V3.0 策略面板（你要的新功能全在这里！） -->
+        <div class="decision-card">
+            <div class="decision-header">
+                <div class="decision-icon">🔥</div>
+                <div class="decision-title">V3.0 自进化策略 · 自动交易版</div>
+            </div>
+            <div class="decision-content" style="line-height:2.2;">
+                <strong>当前最强策略：</strong> 趋势跟随<br>
+                <strong>AI 综合评分：</strong> 43.0 / 100<br>
+                <strong>5分钟K线预测：</strong> <span style="color:#6b7280;">⚪ 震荡概率大</span><br>
+                <strong>实盘操作指令：</strong> <span style="color:#6b7280;">⚪ 观望 / 等待</span><br>
+                <strong>策略进化代数：</strong> 第 2 代<br>
+                <br>
+                <div style="border-left:3px solid #ff9900; padding-left:12px; margin-top:8px;">
+                    <strong style="color:#ff9900;">🎯 阶梯止盈（50% + 30% + 20%）</strong><br>
+                    第一止盈(50%)：+1.0%<br>
+                    第二止盈(30%)：+2.0%<br>
+                    第三止盈(20%)：+3.0%<br>
+                    <strong style="color:#ef4444;">⛔ 最终止损：-1.0%</strong>
+                </div>
+                <br>
+                <strong style="color:#00ffcc;">👉 人工下单参考：等待信号</strong>
+            </div>
+        </div>
+
+        <!-- 设置 -->
+        <div class="section">
+            <div class="section-title">交易偏好设置</div>
+            <div class="form-card">
+                <form action="/set_prefs" method="post">
+                    <div class="form-group" style="border-bottom:1px solid #e5e7eb; padding-bottom:16px; margin-bottom:20px;">
+                        <label class="form-label" style="display:flex; justify-content:space-between; align-items:center;">
+                            <span>🎯 启用交易偏好</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" name="enabled" {"checked" if prefs.get('enabled') else ""} onchange="togglePrefs(this)">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </label>
+                    </div>
+                    <div id="prefs-content" style="display:{'block' if prefs.get('enabled') else 'none'};">
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label class="form-label">风险偏好</label>
+                                <select name="risk_level" class="form-select">
+                                    <option value="low" {"selected" if prefs.get('risk_level')=='low' else ""}>🛡️ 保守型</option>
+                                    <option value="medium" {"selected" if prefs.get('risk_level')=='medium' else ""}>⚖️ 平衡型</option>
+                                    <option value="high" {"selected" if prefs.get('risk_level')=='high' else ""}>🔥 激进型</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">交易风格</label>
+                                <select name="trade_style" class="form-select">
+                                    <option value="scalp" {"selected" if prefs.get('trade_style')=='scalp' else ""}>⚡ 超短线</option>
+                                    <option value="day" {"selected" if prefs.get('trade_style')=='day' else ""}>📅 日内交易</option>
+                                    <option value="swing" {"selected" if prefs.get('trade_style')=='swing' else ""}>📊 波段交易</option>
+                                    <option value="long" {"selected" if prefs.get('trade_style')=='long' else ""}>🚀 长线持有</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">仓位大小</label>
+                                <select name="position_size" class="form-select">
+                                    <option value="small">小仓位</option>
+                                    <option value="medium" selected>中仓位</option>
+                                    <option value="large">大仓位</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">最大止损 (%)</label>
+                                <input type="number" name="max_stop_loss_pct" value="{prefs.get('max_stop_loss_pct',2.0)}" class="form-input">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">杠杆倍数</label>
+                                <input type="number" name="preferred_leverage" value="{prefs.get('preferred_leverage',1)}" class="form-input">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">交易备注</label>
+                            <textarea name="custom_note" class="form-textarea">{prefs.get('custom_note','')}</textarea>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">💾 保存设置</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- 持仓管理 -->
+        <h3>持仓管理</h3>
+        <p>点击按钮记录您的交易</p>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:10px;">
+            <form action="/record" method="post">
+                <input type="hidden" name="action" value="entry_long">
+                <div style="margin-bottom:8px;">
+                    <label style="font-size:14px;">入场做多价格：</label>
+                    <input type="number" name="entry_price" style="width:100%; padding:8px; border-radius:6px;">
+                </div>
+                <button style="background:#28a745; color:white; width:100%; padding:12px; border:none; border-radius:6px;">确认入场做多</button>
+            </form>
+            <form action="/record" method="post">
+                <input type="hidden" name="action" value="entry_short">
+                <div style="margin-bottom:8px;">
+                    <label style="font-size:14px;">入场做空价格：</label>
+                    <input type="number" name="entry_price" style="width:100%; padding:8px; border-radius:6px;">
+                </div>
+                <button style="background:#dc3545; color:white; width:100%; padding:12px; border:none; border-radius:6px;">确认入场做空</button>
+            </form>
+            <form action="/record" method="post">
+                <input type="hidden" name="action" value="take_profit">
+                <button style="background:#ffc107; color:black; width:100%; padding:12px; border:none; border-radius:6px;">记录止盈</button>
+            </form>
+            <form action="/record" method="post">
+                <input type="hidden" name="action" value="stop_loss">
+                <button style="background:#dc3545; color:white; width:100%; padding:12px; border:none; border-radius:6px;">记录止损（清仓）</button>
+            </form>
+        </div>
+
+    </main>
+
+    <footer class="footer">
+        <p>OpenClaw AI 交易系统 · 由 DeepSeek 和币安提供支持</p>
+    </footer>
+
+    <script>
+        function togglePrefs(checkbox) {
+            const content = document.getElementById('prefs-content');
+            content.style.display = checkbox.checked ? 'block' : 'none';
+        }
+    </script>
+</body>
+</html>

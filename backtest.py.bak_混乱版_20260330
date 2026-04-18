@@ -1,0 +1,846 @@
+from datetime import datetime, timezone
+from dataclasses import dataclass
+import random
+
+import ccxt
+import pandas as pd
+import numpy as np
+try:
+    import pandas_ta as ta
+except Exception:
+    class _TACompat:
+        @staticmethod
+        def atr(high, low, close, length=14):
+            high = pd.Series(high, dtype=float)
+            low = pd.Series(low, dtype=float)
+            close = pd.Series(close, dtype=float)
+            prev_close = close.shift(1)
+            tr = pd.concat(
+                [(high - low), (high - prev_close).abs(), (low - prev_close).abs()],
+                axis=1,
+            ).max(axis=1)
+            return tr.rolling(length).mean()
+
+        @staticmethod
+        def rsi(close, length=14):
+            close = pd.Series(close, dtype=float)
+            delta = close.diff()
+            gain = delta.where(delta > 0, 0.0).rolling(length).mean()
+            loss = (-delta.where(delta < 0, 0.0)).rolling(length).mean()
+            rs = gain / loss.replace(0, np.nan)
+            out = 100 - (100 / (1 + rs))
+            return out.fillna(50.0)
+
+        @staticmethod
+        def macd(close, fast=12, slow=26, signal=9):
+            close = pd.Series(close, dtype=float)
+            ema_fast = close.ewm(span=fast, adjust=False).mean()
+            ema_slow = close.ewm(span=slow, adjust=False).mean()
+            macd_line = ema_fast - ema_slow
+            macd_signal = macd_line.ewm(span=signal, adjust=False).mean()
+            macd_hist = macd_line - macd_signal
+            return pd.DataFrame(
+                {
+                    f"MACD_{fast}_{slow}_{signal}": macd_line,
+                    f"MACDs_{fast}_{slow}_{signal}": macd_signal,
+                    f"MACDh_{fast}_{slow}_{signal}": macd_hist,
+                }
+            )
+
+    ta = _TACompat()
+from backtesting import Strategy
+from backtesting.lib import FractionalBacktest
+
+from indicator_upgrade import ema, rsi, macd, detect_kline_pattern, support_resistance, volume_analysis
+from data_upgrade import get_klines, get_multi_tf_data
+
+# requested imports (with safe fallback for current repo layout)
+try:
+    from strategy_arena_V3 import StrategyGene, Arena
+except Exception:
+    class StrategyGene:
+        def __init__(self, strategy_id, name, strategy_type):
+            self.strategy_id = strategy_id
+            self.name = name
+            self.strategy_type = strategy_type
+            self.score = 0.0
+            self.direction = "观望"
+            self.is_active = True
+            self.generation = 1
+            self.breakout_bias = 0.5
+            self.pullback_bias = 0.5
+            self.pattern_bias = 0.5
+            self.factor_bias = 0.5
+
+    class Arena:
+        def __init__(self):
+            self.genes = [
+                StrategyGene(1, "趋势突破", "trend"),
+                StrategyGene(2, "趋势回踩", "trend"),
+                StrategyGene(3, "形态确认", "pattern"),
+                StrategyGene(4, "资金共振", "flow"),
+                StrategyGene(5, "动量延续", "momentum"),
+                StrategyGene(6, "均衡稳健", "stable"),
+            ]
+
+        def run(self):
+            return self.genes
+
+try:
+    from evolution_core import score_gene, mutate_from_best, inherit_direction
+except Exception:
+    def score_gene(gene, score):
+        gene.score = float(score)
+        return gene
+
+    def mutate_from_best(best, new_id):
+        child = StrategyGene(new_id, f"进化_{best.name}", best.strategy_type)
+        child.generation = getattr(best, "generation", 1) + 1
+        child.breakout_bias = max(0.0, min(1.0, getattr(best, "breakout_bias", 0.5) + random.uniform(-0.12, 0.12)))
+        child.pullback_bias = max(0.0, min(1.0, getattr(best, "pullback_bias", 0.5) + random.uniform(-0.12, 0.12)))
+        child.pattern_bias = max(0.0, min(1.0, getattr(best, "pattern_bias", 0.5) + random.uniform(-0.12, 0.12)))
+        child.factor_bias = max(0.0, min(1.0, getattr(best, "factor_bias", 0.5) + random.uniform(-0.12, 0.12)))
+        return child
+
+    def inherit_direction(gene, direction):
+        gene.direction = direction
+        return gene
+
+from ai_decision_upgrade import last_signal
+
+SYMBOL = "BTC/USDT"
+TIMEFRAME = "1m"
+LIMIT = 500000
+INITIAL_CASH = 10000
+COMMISSION = 0.00018
+STOP_LOSS_PCT = 0.003
+TAKE_PROFIT_PCT = 0.02
+POSITION_SIZE = 0.30
+EVOLVE_INTERVAL = 50
+SIM_GENERATIONS = 50
+PATTERN_STEP_MAIN = 25
+PATTERN_STEP_1M = 15
+# 第23步基底保留：MIN_BARS / ADX 门槛（第24步上调数值）
+# 第24步：压日均 3–8 — 间隔 264；ADX≥26；另见 EMA50 突破 + volume>vol_ma（next 内）
+MIN_BARS_BETWEEN_ENTRIES = 264
+ADX_ENTRY_MIN = 26.0
+
+
+def fetch_ohlcv_ccxt(limit: int = LIMIT) -> pd.DataFrame:
+    exchange = ccxt.binance({"enableRateLimit": True})
+    since = exchange.milliseconds() - (365 * 24 * 60 * 60 * 1000)
+    all_rows = []
+    while len(all_rows) < limit:
+        batch = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, since=since, limit=1000)
+        if not batch:
+            break
+        all_rows.extend(batch)
+        since = batch[-1][0] + 1
+        if len(batch) < 1000:
+            break
+    all_rows = all_rows[-limit:]
+    if len(all_rows) < 500:
+        raise RuntimeError(f"historical data too short: {len(all_rows)} rows")
+    df = pd.DataFrame(all_rows, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+    df["Date"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    df = df.set_index("Date")[["Open", "High", "Low", "Close", "Volume"]].astype(float)
+    return df
+
+
+def build_feature_table(df: pd.DataFrame) -> pd.DataFrame:
+    tf = get_multi_tf_data(use_live=False, base_df=df)
+    feat = pd.DataFrame(index=df.index)
+    feat["close"] = df["Close"]
+    feat["high"] = df["High"]
+    feat["low"] = df["Low"]
+    # 1m main signal on execution timeframe
+    feat["ema13_1m"] = ema(df["Close"], 13)
+    feat["ema21_1m"] = ema(df["Close"], 21)
+    feat["rsi5"] = rsi(df["Close"], 14).fillna(50)
+    feat["rsi_ta"] = ta.rsi(df["Close"], length=14).fillna(50)
+    macd_ta = ta.macd(df["Close"], fast=12, slow=26, signal=9)
+    feat["macd_ta"] = macd_ta["MACD_12_26_9"].fillna(0)
+    feat["macd_signal_ta"] = macd_ta["MACDs_12_26_9"].fillna(0)
+    feat["macd_hist_ta"] = macd_ta["MACDh_12_26_9"].fillna(0)
+    _, _, hist = macd(df["Close"])
+    feat["hist"] = hist.fillna(0)
+    feat["hist_prev"] = feat["hist"].shift(1).fillna(0)
+
+    e13_5m = ema(tf["5m"]["Close"], 13)
+    e21_5m = ema(tf["5m"]["Close"], 21)
+    e13_1h = ema(tf["1h"]["Close"], 13)
+    e21_1h = ema(tf["1h"]["Close"], 21)
+    feat["trend_5m_up"] = (e13_5m > e21_5m).reindex(df.index, method="ffill").fillna(False)
+    feat["trend_5m_dn"] = (e13_5m < e21_5m).reindex(df.index, method="ffill").fillna(False)
+    feat["trend_1h_up"] = (e13_1h > e21_1h).reindex(df.index, method="ffill").fillna(False)
+    feat["trend_1h_dn"] = (e13_1h < e21_1h).reindex(df.index, method="ffill").fillna(False)
+
+    ret = df["Close"].pct_change().fillna(0.0)
+    volz = (df["Volume"] - df["Volume"].rolling(120).mean()) / df["Volume"].rolling(120).std().replace(0, np.nan)
+    volz = volz.fillna(0.0)
+    feat["taker_buy"] = (0.5 + np.tanh(ret * 120 + volz * 0.15) * 0.08).clip(0.35, 0.65)
+    feat["ls_ratio"] = (1.0 + np.tanh(ret.rolling(6).sum().fillna(0) * 50) * 0.35).clip(0.6, 1.4)
+    feat["funding"] = (ret.rolling(12).mean().fillna(0) * 8).clip(-0.001, 0.001)
+    feat["oi_bias"] = np.tanh(volz * 0.4 + ret.rolling(3).sum().fillna(0) * 30)
+
+    rolling_high = df["High"].rolling(20).max().shift(1)
+    rolling_low = df["Low"].rolling(20).min().shift(1)
+    feat["breakout_up"] = feat["close"] > rolling_high
+    feat["breakout_dn"] = feat["close"] < rolling_low
+    feat["pullback_long"] = (feat["low"] <= feat["ema21_1m"]) & (feat["close"] >= feat["ema21_1m"])
+    feat["pullback_short"] = (feat["high"] >= feat["ema21_1m"]) & (feat["close"] <= feat["ema21_1m"])
+
+    # fast pattern/volume cache (vectorized surrogate)
+    up3 = (df["Close"] > df["Close"].shift(1)) & (df["Close"].shift(1) > df["Close"].shift(2))
+    dn3 = (df["Close"] < df["Close"].shift(1)) & (df["Close"].shift(1) < df["Close"].shift(2))
+    feat["pattern_score"] = np.where(up3, 1, np.where(dn3, -1, 0))
+    vol_ma = df["Volume"].rolling(20).mean()
+    feat["vol_expand"] = (df["Volume"] > vol_ma * 1.15).fillna(False)
+    feat = feat.ffill().fillna(0)
+    return feat
+
+
+def fetch_ohlcv_1m(limit: int = 100000) -> pd.DataFrame:
+    exchange = ccxt.binance({"enableRateLimit": True})
+    since = exchange.milliseconds() - (365 * 24 * 60 * 60 * 1000)
+    all_rows = []
+    while len(all_rows) < limit:
+        batch = exchange.fetch_ohlcv(SYMBOL, timeframe="1m", since=since, limit=1000)
+        if not batch:
+            break
+        all_rows.extend(batch)
+        since = batch[-1][0] + 1
+        if len(batch) < 1000:
+            break
+    all_rows = all_rows[-limit:]
+    if len(all_rows) < 1000:
+        raise RuntimeError(f"1m historical data too short: {len(all_rows)} rows")
+    df = pd.DataFrame(all_rows, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
+    df["Date"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    df = df.set_index("Date")[["Open", "High", "Low", "Close", "Volume"]].astype(float)
+    return df
+
+
+def build_1m_feature_table(df_1m: pd.DataFrame, idx_5m: pd.DatetimeIndex) -> pd.DataFrame:
+    feat = pd.DataFrame(index=df_1m.index)
+    feat["close"] = df_1m["Close"]
+    feat["atr1m"] = ta.atr(df_1m["High"], df_1m["Low"], df_1m["Close"], 14).bfill().fillna(0)
+    feat["ema13"] = ema(df_1m["Close"], 13)
+    feat["ema21"] = ema(df_1m["Close"], 21)
+    feat["trend_up"] = feat["ema13"] > feat["ema21"]
+    feat["trend_dn"] = feat["ema13"] < feat["ema21"]
+    feat["rsi"] = rsi(df_1m["Close"], 14).fillna(50)
+    feat["rsi_ta"] = ta.rsi(df_1m["Close"], length=14).fillna(50)
+    # 第13步：短周期 EMA5/EMA13 预计算（与 ta.ema 一致；_TACompat 无 ema 时用 indicator_upgrade.ema）
+    if hasattr(ta, "ema"):
+        feat["ema_fast_1m"] = ta.ema(df_1m["Close"], length=5).bfill().fillna(0)
+        feat["ema_slow_1m"] = ta.ema(df_1m["Close"], length=13).bfill().fillna(0)
+    else:
+        feat["ema_fast_1m"] = ema(df_1m["Close"], 5).bfill().fillna(0)
+        feat["ema_slow_1m"] = ema(df_1m["Close"], 13).bfill().fillna(0)
+    # 第14步：新增 BB 中轨确认滤波（提升 PF 同时尽量保笔数）
+    # BB length=20 std=2，close > bb_middle 为 long（趋势中轨上确认），预计日均仍8笔左右
+    if hasattr(ta, "bbands"):
+        bb = ta.bbands(df_1m["Close"], length=20, std=2)
+        if isinstance(bb, pd.DataFrame) and len(bb.columns) > 0:
+            mid_col = "BBM_20_2.0" if "BBM_20_2.0" in bb.columns else next(
+                (c for c in bb.columns if str(c).startswith("BBM")), None
+            )
+            feat["bb_middle_1m"] = bb[mid_col].bfill().fillna(0) if mid_col else df_1m["Close"].rolling(20).mean().bfill().fillna(0)
+        else:
+            feat["bb_middle_1m"] = df_1m["Close"].rolling(20).mean().bfill().fillna(0)
+    else:
+        feat["bb_middle_1m"] = df_1m["Close"].rolling(20).mean().bfill().fillna(0)
+    if hasattr(ta, "adx") and "High" in df_1m.columns:
+        adx = ta.adx(df_1m["High"], df_1m["Low"], df_1m["Close"], length=14)
+        if isinstance(adx, pd.DataFrame) and adx is not None and "ADX_14" in adx.columns:
+            feat["adx_1m"] = adx["ADX_14"].bfill().fillna(0)
+        elif isinstance(adx, pd.DataFrame) and len(adx.columns) > 0:
+            adx_col = next((c for c in adx.columns if str(c).startswith("ADX_")), None)
+            feat["adx_1m"] = adx[adx_col].bfill().fillna(0) if adx_col else df_1m["Close"].rolling(14).mean().bfill().fillna(0)
+        else:
+            feat["adx_1m"] = df_1m["Close"].rolling(14).mean().bfill().fillna(0)
+    else:
+        feat["adx_1m"] = df_1m["Close"].rolling(14).mean().bfill().fillna(0)
+    # 第21步：反转检测用 1m EMA5/13 + RSI（与 ta 一致；无 ta.ema 时用 indicator_upgrade.ema）
+    if hasattr(ta, "ema"):
+        feat["ema5_1m"] = ta.ema(df_1m["Close"], length=5).bfill().fillna(0)
+        feat["ema13_1m"] = ta.ema(df_1m["Close"], length=13).bfill().fillna(0)
+    else:
+        feat["ema5_1m"] = ema(df_1m["Close"], 5).bfill().fillna(0)
+        feat["ema13_1m"] = ema(df_1m["Close"], 13).bfill().fillna(0)
+    feat["rsi_1m"] = ta.rsi(df_1m["Close"], length=14).fillna(50) if hasattr(ta, "rsi") else rsi(df_1m["Close"], 14).fillna(50)
+    feat["atr_1m"] = feat["atr1m"]
+    # 第23步：20 期 EMA（保留列，供分析/兼容）
+    if hasattr(ta, "ema"):
+        feat["ema20_1m"] = ta.ema(df_1m["Close"], length=20).bfill().fillna(0)
+    else:
+        feat["ema20_1m"] = ema(df_1m["Close"], 20).bfill().fillna(0)
+    # 第24步：50 期 EMA 用于「明确突破」入场（更强趋势过滤）
+    if hasattr(ta, "ema"):
+        feat["ema50_1m"] = ta.ema(df_1m["Close"], length=50).bfill().fillna(0)
+    else:
+        feat["ema50_1m"] = ema(df_1m["Close"], 50).bfill().fillna(0)
+    feat["volume"] = df_1m["Volume"].astype(float)
+    vol_series = feat["volume"]
+    if hasattr(ta, "sma"):
+        vol_ma_s = ta.sma(vol_series, length=20)
+        if not isinstance(vol_ma_s, pd.Series):
+            vol_ma_s = pd.Series(vol_ma_s, index=df_1m.index, dtype=float)
+        feat["vol_ma_1m"] = vol_ma_s.bfill().fillna(0)
+    else:
+        feat["vol_ma_1m"] = vol_series.rolling(20).mean().bfill().fillna(0)
+    macd_ta = ta.macd(df_1m["Close"], fast=12, slow=26, signal=9)
+    feat["macd_ta"] = macd_ta["MACD_12_26_9"].fillna(0)
+    feat["macd_signal_ta"] = macd_ta["MACDs_12_26_9"].fillna(0)
+    feat["macd_hist_ta"] = macd_ta["MACDh_12_26_9"].fillna(0)
+    feat["macd_ta_prev"] = feat["macd_ta"].shift(1).fillna(0)
+    feat["macd_signal_ta_prev"] = feat["macd_signal_ta"].shift(1).fillna(0)
+
+    up3 = (df_1m["Close"] > df_1m["Close"].shift(1)) & (df_1m["Close"].shift(1) > df_1m["Close"].shift(2))
+    dn3 = (df_1m["Close"] < df_1m["Close"].shift(1)) & (df_1m["Close"].shift(1) < df_1m["Close"].shift(2))
+    feat["pattern_score"] = np.where(up3, 1, np.where(dn3, -1, 0))
+
+    prev_h = df_1m["High"].rolling(10).max().shift(1)
+    prev_l = df_1m["Low"].rolling(10).min().shift(1)
+    breakout = (df_1m["Close"] > prev_h) | (df_1m["Close"] < prev_l)
+    pullback = ((df_1m["Close"] - feat["ema21"]).abs() / (df_1m["Close"] + 1e-12)) < 0.0012
+    feat["entry_mode_hint"] = np.where(breakout, 1, np.where(pullback, -1, 0))
+
+    # map 1m features to 5m bars (use last known minute)
+    mapped = feat.reindex(idx_5m, method="ffill").fillna(0)
+    return mapped
+
+
+def gene_signal(feat_row, gene):
+    # 1m精确入场（每天3-8笔） + 5m趋势参考
+    trend_up = bool(
+        (feat_row["ema13_1m"] > feat_row["ema21_1m"])
+        and (feat_row["trend_5m_up"] or feat_row["trend_1h_up"])
+    )
+    trend_dn = bool(
+        (feat_row["ema13_1m"] < feat_row["ema21_1m"])
+        and (feat_row["trend_5m_dn"] or feat_row["trend_1h_dn"])
+    )
+    rsi_long_ok = 30 < float(feat_row["rsi5"]) < 65
+    rsi_short_ok = 35 < float(feat_row["rsi5"]) < 70
+    macd_expand_up = float(feat_row["hist"]) > 0 and float(feat_row["hist"]) > float(feat_row["hist_prev"])
+    macd_expand_dn = float(feat_row["hist"]) < 0 and float(feat_row["hist"]) < float(feat_row["hist_prev"])
+
+    pattern_long = feat_row["pattern_score"] > 0
+    pattern_short = feat_row["pattern_score"] < 0
+    vol_expand = bool(feat_row["vol_expand"])
+
+    # gene mode
+    use_breakout = getattr(gene, "breakout_bias", 0.5) >= getattr(gene, "pullback_bias", 0.5)
+    mode_long = bool(feat_row["breakout_up"]) if use_breakout else bool(feat_row["pullback_long"])
+    mode_short = bool(feat_row["breakout_dn"]) if use_breakout else bool(feat_row["pullback_short"])
+
+    pattern_gate_long = pattern_long or vol_expand or (feat_row["pattern_score"] >= 0)
+    pattern_gate_short = pattern_short or vol_expand or (feat_row["pattern_score"] <= 0)
+    # 第10步：资金面过滤关闭（无过滤）
+    factor_gate_long = True
+    factor_gate_short = True
+
+    long_sig = trend_up and rsi_long_ok and macd_expand_up and pattern_gate_long and mode_long and factor_gate_long
+    short_sig = trend_dn and rsi_short_ok and macd_expand_dn and pattern_gate_short and mode_short and factor_gate_short
+    if long_sig:
+        return 1
+    if short_sig:
+        return -1
+    return 0
+
+
+def evaluate_gene(gene, feat: pd.DataFrame, start: int, end: int):
+    pnl = 0.0
+    wins = 0
+    losses = 0
+    pos = 0
+    entry = 0.0
+    for i in range(start, end):
+        row = feat.iloc[i]
+        price = float(row["close"])
+        high = float(row["high"])
+        low = float(row["low"])
+        if pos == 0:
+            sig = gene_signal(row, gene)
+            if sig != 0:
+                pos = sig
+                entry = price
+        else:
+            if pos == 1:
+                sl = entry * (1 - STOP_LOSS_PCT)
+                tp = entry * (1 + TAKE_PROFIT_PCT)
+                if low <= sl:
+                    p = (sl / entry - 1)
+                    pnl += p
+                    losses += 1
+                    pos = 0
+                elif high >= tp:
+                    p = (tp / entry - 1)
+                    pnl += p
+                    wins += 1
+                    pos = 0
+            else:
+                sl = entry * (1 + STOP_LOSS_PCT)
+                tp = entry * (1 - TAKE_PROFIT_PCT)
+                if high >= sl:
+                    p = (entry / sl - 1)
+                    pnl += p
+                    losses += 1
+                    pos = 0
+                elif low <= tp:
+                    p = (entry / tp - 1)
+                    pnl += p
+                    wins += 1
+                    pos = 0
+    trades = wins + losses
+    win_rate = (wins / trades * 100) if trades else 0.0
+    score = pnl * 100 + win_rate * 0.2
+    score_gene(gene, score)
+    return score, trades, win_rate
+
+
+def evolve_genes(feat: pd.DataFrame, generations=SIM_GENERATIONS):
+    arena = Arena()
+    genes = arena.run()
+    if genes is None or len(genes) == 0:
+        genes = [StrategyGene(1, "fallback", "stable")]
+
+    window = max(200, len(feat) // (generations + 2))
+    for g in range(generations):
+        start = g * window
+        end = min(len(feat), start + window)
+        for gene in genes:
+            evaluate_gene(gene, feat, start, end)
+        genes = sorted(genes, key=lambda x: getattr(x, "score", 0), reverse=True)
+        best = genes[0]
+        weakest = genes[-1]
+        weakest.is_active = False
+        new_id = max(getattr(x, "strategy_id", i + 1) for i, x in enumerate(genes)) + 1
+        child = mutate_from_best(best, new_id)
+        inherit_direction(child, getattr(best, "direction", "观望"))
+        genes.append(child)
+        genes = sorted([x for x in genes if getattr(x, "is_active", True)], key=lambda x: getattr(x, "score", 0), reverse=True)[:6]
+    genes = sorted(genes, key=lambda x: getattr(x, "score", 0), reverse=True)
+    return genes[0]
+
+
+BEST_GENE = None
+FEATURE_TABLE = None
+FEATURE_TABLE_1M = None
+LAST_KELLY_SAMPLE = {}
+DAILY_RISK_TRIGGER_COUNT = 0
+ATR_SL_SAMPLES = []
+ATR_TP_SAMPLES = []
+ONE_MINUTE_BARS = 0
+ONE_MINUTE_SIGNAL_HITS = 0
+SIGNAL_CHECK_BARS = 0
+RSI_AUX_HITS = 0
+MACD_CONFIRM_HITS = 0
+
+
+class V3BacktestStrategy(Strategy):
+    def init(self):
+        if FEATURE_TABLE is not None:
+            self.feat = FEATURE_TABLE
+        else:
+            df = pd.DataFrame(
+                {
+                    "Open": pd.Series(self.data.Open, dtype=float),
+                    "High": pd.Series(self.data.High, dtype=float),
+                    "Low": pd.Series(self.data.Low, dtype=float),
+                    "Close": pd.Series(self.data.Close, dtype=float),
+                    "Volume": pd.Series(self.data.Volume, dtype=float),
+                },
+                index=pd.to_datetime(self.data.index),
+            )
+            self.feat = build_feature_table(df)
+        self.arena = Arena()
+        self.genes = self.arena.run() or [StrategyGene(1, "fallback", "stable")]
+        self.best_gene = BEST_GENE if BEST_GENE is not None else self.genes[0]
+        self.feat_1m = FEATURE_TABLE_1M if FEATURE_TABLE_1M is not None else pd.DataFrame(index=self.feat.index)
+        self.last_signal_bar = -10**9
+        self._warmup = 420
+        self._closed_count = 0
+        self.current_day = None
+        self.daily_pnl = 0.0
+        self.daily_locked = False
+        self.atr = ta.atr(self.data.High, self.data.Low, self.data.Close, 14)
+
+    def _update_daily_risk_state(self, i):
+        # 1) new day reset
+        bar_day = pd.Timestamp(self.data.index[-1]).date()
+        if self.current_day != bar_day:
+            self.current_day = bar_day
+            self.daily_pnl = 0.0
+            self.daily_locked = False
+
+        # 2) add pnl from newly closed trades
+        closed = list(self.closed_trades)
+        if len(closed) > self._closed_count:
+            for t in closed[self._closed_count:]:
+                self.daily_pnl += float(getattr(t, "pl", 0.0))
+            self._closed_count = len(closed)
+
+        # 3) check daily max loss lock
+        daily_limit = float(self.equity) * 0.015
+        global DAILY_RISK_TRIGGER_COUNT
+        if (self.daily_pnl < -daily_limit) and (not self.daily_locked):
+            self.daily_locked = True
+            DAILY_RISK_TRIGGER_COUNT += 1
+
+    def _evolve_live(self, i):
+        if i % EVOLVE_INTERVAL != 0 or i < self._warmup:
+            return
+        start = max(0, i - EVOLVE_INTERVAL * 50)
+        end = i
+        for g in self.genes:
+            evaluate_gene(g, self.feat, start, end)
+        self.genes = sorted(self.genes, key=lambda x: getattr(x, "score", 0), reverse=True)
+        best = self.genes[0]
+        weakest = self.genes[-1]
+        weakest.is_active = False
+        new_id = max(getattr(x, "strategy_id", idx + 1) for idx, x in enumerate(self.genes)) + 1
+        child = mutate_from_best(best, new_id)
+        inherit_direction(child, getattr(best, "direction", "观望"))
+        self.genes.append(child)
+        self.genes = sorted([x for x in self.genes if getattr(x, "is_active", True)], key=lambda x: getattr(x, "score", 0), reverse=True)[:6]
+        self.best_gene = self.genes[0]
+
+    def next(self):
+        i = len(self.data.Close) - 1
+        if i < self._warmup:
+            return
+
+        self._update_daily_risk_state(i)
+
+        if self.position:
+            return
+        if i - self.last_signal_bar < MIN_BARS_BETWEEN_ENTRIES:
+            return
+
+        self._evolve_live(i)
+        row = self.feat.iloc[i]
+        # 1m主数据500000根 + 基因>0，目标每天平均5笔（总交易冲到2000+）
+        # 第10步彻底放宽，50代进化 + RSI辅助 + 无资金过滤，目标每天平均5笔（总交易1000+）
+        # 第11步：MACD 严格金叉/死叉最终过滤（过严）
+        # 第12步放松MACD为方向确认（非严格金叉），一步步优化，目标每天3-8笔 + PF≥1.5 + 夏普≥0.5
+        # 第13步：切换到短周期EMA5/EMA13方向确认（专为保笔数设计，不会压交易次数）
+        # 比EMA9/21更敏感，预计日均笔数维持在8.5-9.5笔左右
+        # 第14步：新增 BB 中轨确认滤波（提升 PF 同时尽量保笔数）
+        # BB length=20 std=2，close > bb_middle 为 long（趋势中轨上确认），预计日均仍8笔左右
+        # 第15步：放宽RSI过滤器（25<rsi<75），专为把日均笔数拉回≥8
+        # 保留EMA5/13 + BB中轨，预计日均8.1-8.6笔
+        # 第16步：新增量能爆发确认（volume > vol_ma_20 * 1.2），专为提升 PF
+        # 配合趋势突破基因，预计日均仍8.0-8.3笔
+        # 第17步：放宽量能爆发阈值到1.05倍（极轻微确认），专为把日均笔数拉回≥8
+        # 保留EMA5/13 + BB中轨 + RSI25-75，预计日均8.1-8.5笔
+        # 第18步：彻底移除量能爆发滤波（1.05倍仍压笔数太狠），恢复到第15步配置
+        # 保留EMA5/13 + BB中轨 + RSI25-75，预计日均回到8.4+
+        # 第19步：新增ADX趋势强度确认（ADX>15，极宽松），专为提升PF
+        # 配合趋势突破基因，预计日均8.0-8.3笔
+        # 第20步：放宽ADX趋势强度确认到 >12（极轻微放宽），专为把日均笔数拉回≥8
+        # 保留EMA5/13 + BB中轨 + RSI25-75 + ADX滤波，预计日均8.0-8.3笔
+        # 第21步：切换高胜率路线 - 精确入场 + 快速保本止损(0.15%) + ATR追踪止盈 + 反转信号提前平仓
+        # 完全按“根据行情灵活提前止盈止损”思路，不死板，适合带单老师（高胜率低回撤）
+        # 第23步保留：RSI20/80、MACD零轴+斜率、限价SL/TP、无动态仓管、凯利
+        # 第24步：间隔264、ADX≥26、EMA50上/下穿突破、volume>vol_ma_20；SL价帽0.25%、TP帽1.2%；凯利rr=5.0
+        gene_score_ok = float(getattr(self.best_gene, "score", 0.0)) > -1.0
+        sig_5m = gene_signal(row, self.best_gene) if gene_score_ok else 0
+        sig = sig_5m
+        global SIGNAL_CHECK_BARS, ONE_MINUTE_SIGNAL_HITS, RSI_AUX_HITS, MACD_CONFIRM_HITS
+        SIGNAL_CHECK_BARS += 1
+        if not self.feat_1m.empty:
+            row1 = self.feat_1m.iloc[i]
+            volume_filter_long = bool(
+                (row1.get("pattern_score", 0) >= 0)
+                and (row1.get("entry_mode_hint", 0) != 0)
+                and (row1.get("trend_up", False))
+            )
+            volume_filter_short = bool(
+                (row1.get("pattern_score", 0) <= 0)
+                and (row1.get("entry_mode_hint", 0) != 0)
+                and (row1.get("trend_dn", False))
+            )
+            rsi_filter_long = bool(20 < float(row1.get("rsi", 50)) < 80)
+            rsi_filter_short = bool(20 < float(row1.get("rsi", 50)) < 80)
+            ema_fast_v = float(row1.get("ema_fast_1m", 0.0))
+            ema_slow_v = float(row1.get("ema_slow_1m", 0.0))
+            ema_long = ema_fast_v > ema_slow_v
+            ema_short = ema_fast_v < ema_slow_v
+            bb_mid = float(row1.get("bb_middle_1m", 0.0))
+            close_1m = float(row1.get("close", 0.0))
+            macd_1m = float(row1.get("macd_ta", 0.0))
+            macd_prev = float(row1.get("macd_ta_prev", 0.0))
+            macd_long_ok = macd_1m > 0 and macd_1m > macd_prev
+            macd_short_ok = macd_1m < 0 and macd_1m < macd_prev
+            ema50 = float(row1.get("ema50_1m", 0.0))
+            if i > 0:
+                prev1 = self.feat_1m.iloc[i - 1]
+                prev_close = float(prev1.get("close", 0.0))
+                prev_ema50 = float(prev1.get("ema50_1m", 0.0))
+            else:
+                prev_close = close_1m
+                prev_ema50 = ema50
+            breakout_long = ema50 > 0 and close_1m > ema50 and prev_close <= prev_ema50
+            breakout_short = ema50 > 0 and close_1m < ema50 and prev_close >= prev_ema50
+            vol_ma = float(row1.get("vol_ma_1m", 0.0))
+            vol_v = float(row1.get("volume", 0.0))
+            vol_confirm = vol_ma > 0 and vol_v > vol_ma
+            bb_long = bb_mid > 0 and close_1m > bb_mid
+            bb_short = close_1m < bb_mid
+            adx_v = float(row1.get("adx_1m", 0.0))
+            adx_strong = adx_v > ADX_ENTRY_MIN
+            long_signal = (
+                ema_long
+                and rsi_filter_long
+                and volume_filter_long
+                and bb_long
+                and adx_strong
+                and macd_long_ok
+                and breakout_long
+                and vol_confirm
+            )
+            short_signal = (
+                ema_short
+                and rsi_filter_short
+                and volume_filter_short
+                and bb_short
+                and adx_strong
+                and macd_short_ok
+                and breakout_short
+                and vol_confirm
+            )
+            # 1m精确入场，目标每天平均5笔（总交易冲到1500-2000笔）
+            if sig_5m == 1 and long_signal:
+                sig = 1
+                ONE_MINUTE_SIGNAL_HITS += 1
+            elif sig_5m == -1 and short_signal:
+                sig = -1
+                ONE_MINUTE_SIGNAL_HITS += 1
+            else:
+                sig = 0
+
+            rsi_aux = float(row1.get("rsi_ta", 50))
+            if sig == 0:
+                rsi_aux_long_ok = bool(rsi_aux < 20 and row["trend_5m_up"])
+                rsi_aux_short_ok = bool(rsi_aux > 80 and row["trend_5m_dn"])
+                if (
+                    rsi_aux_long_ok
+                    and ema_long
+                    and volume_filter_long
+                    and bb_long
+                    and adx_strong
+                    and macd_long_ok
+                    and breakout_long
+                    and vol_confirm
+                ):
+                    sig = 1
+                    RSI_AUX_HITS += 1
+                elif (
+                    rsi_aux_short_ok
+                    and ema_short
+                    and volume_filter_short
+                    and bb_short
+                    and adx_strong
+                    and macd_short_ok
+                    and breakout_short
+                    and vol_confirm
+                ):
+                    sig = -1
+                    RSI_AUX_HITS += 1
+
+            sig_before_ema = sig
+            if sig_before_ema == 1 and ema_long:
+                MACD_CONFIRM_HITS += 1
+            elif sig_before_ema == -1 and ema_short:
+                MACD_CONFIRM_HITS += 1
+            if sig == 1 and not ema_long:
+                sig = 0
+            elif sig == -1 and not ema_short:
+                sig = 0
+            if sig == 1 and not bb_long:
+                sig = 0
+            elif sig == -1 and not bb_short:
+                sig = 0
+            if sig == 1 and not adx_strong:
+                sig = 0
+            elif sig == -1 and not adx_strong:
+                sig = 0
+            if sig == 1 and not macd_long_ok:
+                sig = 0
+            elif sig == -1 and not macd_short_ok:
+                sig = 0
+            if sig == 1 and not breakout_long:
+                sig = 0
+            elif sig == -1 and not breakout_short:
+                sig = 0
+            if sig == 1 and not vol_confirm:
+                sig = 0
+            elif sig == -1 and not vol_confirm:
+                sig = 0
+        # Use broker-space price from backtesting engine (FractionalBacktest may scale prices).
+        price = float(self.data.Close[-1])
+        # Kelly risk control (rolling 50 closed trades, half-kelly, cap 30%)
+        rr = 5.0  # 第24步：凯利假设盈亏比上调测试（挂单仍为 0.3×ATR/1.2×ATR 与价格帽）
+        closed = list(self.closed_trades)
+        recent = closed[-50:] if len(closed) > 50 else closed
+        if recent:
+            wins = sum(1 for t in recent if getattr(t, "pl", 0) > 0)
+            rolling_win_rate = wins / len(recent)
+        else:
+            rolling_win_rate = 0.5
+        kelly_fraction = max(0.0, (rolling_win_rate * (rr + 1.0) - 1.0) / rr)
+        # half-kelly + hard cap(30%)
+        size_fraction = min(0.3, kelly_fraction * 0.5)
+        # convert to unit size from equity notional
+        target_notional = max(0.0, float(self.equity) * size_fraction)
+        raw_units = target_notional / price if price > 0 else 0.0
+        # backtesting size rule: (0,1) fraction of equity OR integer units >=1
+        if raw_units >= 1:
+            dynamic_size = int(max(1, np.floor(raw_units)))
+        else:
+            dynamic_size = float(min(0.99, max(1e-6, size_fraction)))
+
+        global LAST_KELLY_SAMPLE
+        LAST_KELLY_SAMPLE = {
+            "rolling_win_rate": round(rolling_win_rate, 4),
+            "kelly_fraction": round(kelly_fraction, 4),
+            "size_fraction": round(size_fraction, 4),
+            "equity": round(float(self.equity), 4),
+            "price": round(price, 8),
+            "size_units": round(float(raw_units), 8),
+            "order_size": dynamic_size,
+        }
+
+        # daily max loss risk control: stop opening new trades for the day
+        if self.daily_locked:
+            return
+
+        global ATR_SL_SAMPLES, ATR_TP_SAMPLES
+        row1e = self.feat_1m.iloc[i] if (not self.feat_1m.empty and i < len(self.feat_1m)) else None
+        atr_abs_e = float(row1e.get("atr_1m", row1e.get("atr1m", 0)) or 0) if row1e is not None else 0.0
+        if atr_abs_e <= 0 or np.isnan(atr_abs_e):
+            atr_abs_e = price * 0.003
+        # 第23步：0.3×ATR / 1.2×ATR；第24步：SL 价格帽收紧至 0.25%，TP 帽保持 1.2%
+        sl_dist = min(0.3 * atr_abs_e, price * 0.0025)
+        tp_dist = min(1.2 * atr_abs_e, price * 0.012)
+        sl_pct = (sl_dist / price) if price > 0 else 0.0
+        tp_pct = (tp_dist / price) if price > 0 else 0.0
+        ATR_SL_SAMPLES.append(sl_pct)
+        ATR_TP_SAMPLES.append(tp_pct)
+
+        if sig == 1:
+            last_signal["direction"] = "做多"
+            self.buy(size=dynamic_size, sl=price - sl_dist, tp=price + tp_dist)
+            self.last_signal_bar = i
+        elif sig == -1:
+            last_signal["direction"] = "做空"
+            self.sell(size=dynamic_size, sl=price + sl_dist, tp=price - tp_dist)
+            self.last_signal_bar = i
+
+
+def run_backtest():
+    try:
+        get_klines(timeframe="5m", limit=10)
+    except Exception:
+        pass
+
+    df = fetch_ohlcv_ccxt(LIMIT)
+    df_1m = df.copy()
+    feat = build_feature_table(df)
+    feat_1m = build_1m_feature_table(df_1m, df.index)
+    global BEST_GENE, FEATURE_TABLE, FEATURE_TABLE_1M, ONE_MINUTE_BARS, DAILY_RISK_TRIGGER_COUNT, ATR_SL_SAMPLES, ATR_TP_SAMPLES, ONE_MINUTE_SIGNAL_HITS, SIGNAL_CHECK_BARS, RSI_AUX_HITS, MACD_CONFIRM_HITS
+    DAILY_RISK_TRIGGER_COUNT = 0
+    ATR_SL_SAMPLES = []
+    ATR_TP_SAMPLES = []
+    ONE_MINUTE_SIGNAL_HITS = 0
+    SIGNAL_CHECK_BARS = 0
+    RSI_AUX_HITS = 0
+    MACD_CONFIRM_HITS = 0
+    FEATURE_TABLE = feat
+    FEATURE_TABLE_1M = feat_1m
+    ONE_MINUTE_BARS = len(df_1m)
+    BEST_GENE = evolve_genes(feat, SIM_GENERATIONS)
+
+    bt = FractionalBacktest(
+        df,
+        V3BacktestStrategy,
+        cash=INITIAL_CASH,
+        commission=COMMISSION,
+        exclusive_orders=True,
+        trade_on_close=False,
+        finalize_trades=True,
+    )
+    stats = bt.run()
+
+    win_rate = float(stats.get("Win Rate [%]", 0.0))
+    profit_factor = float(stats.get("Profit Factor", 0.0))
+    max_dd = abs(float(stats.get("Max. Drawdown [%]", 0.0)))
+    annual_return = float(stats.get("Return (Ann.) [%]", 0.0))
+    sharpe = float(stats.get("Sharpe Ratio", 0.0))
+    trades_count = int(stats.get("# Trades", 0))
+    total_days = max(1, int(df.index.normalize().nunique()))
+    avg_trades_per_day = trades_count / total_days
+    atr_sl_avg_pct = (float(np.mean(ATR_SL_SAMPLES)) * 100) if ATR_SL_SAMPLES else 0.0
+    atr_tp_avg_pct = (float(np.mean(ATR_TP_SAMPLES)) * 100) if ATR_TP_SAMPLES else 0.0
+    one_minute_trigger_rate = (ONE_MINUTE_SIGNAL_HITS / SIGNAL_CHECK_BARS * 100) if SIGNAL_CHECK_BARS else 0.0
+    rsi_aux_rate = (RSI_AUX_HITS / SIGNAL_CHECK_BARS * 100) if SIGNAL_CHECK_BARS else 0.0
+    macd_confirm_rate = (MACD_CONFIRM_HITS / SIGNAL_CHECK_BARS * 100) if SIGNAL_CHECK_BARS else 0.0
+
+    summary = pd.DataFrame(
+        [
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "symbol": SYMBOL,
+                "timeframe": TIMEFRAME,
+                "bars": len(df),
+                "win_rate_pct": round(win_rate, 2),
+                "profit_factor": round(profit_factor, 4),
+                "max_drawdown_pct": round(max_dd, 2),
+                "annual_return_pct": round(annual_return, 2),
+                "sharpe_ratio": round(sharpe, 4),
+                "trades_count": trades_count,
+                "best_gene_name": getattr(BEST_GENE, "name", "N/A"),
+                "best_gene_score": round(float(getattr(BEST_GENE, "score", 0.0)), 4),
+            }
+        ]
+    )
+    summary.to_csv("backtest_result.csv", index=False)
+    bt.plot(filename="backtest_chart.html", open_browser=False)
+
+    print("===== V3 Evolution Backtest Result =====")
+    print(f"Symbol/TF      : {SYMBOL} / {TIMEFRAME}")
+    print(f"Bars           : {len(df)}")
+    print(f"交易次数       : {trades_count}")
+    print(f"平均每天交易    : {avg_trades_per_day:.2f}")
+    print(f"胜率           : {win_rate:.2f}%")
+    print(f"盈亏比(Profit Factor): {profit_factor:.4f}")
+    print(f"最大回撤       : {max_dd:.2f}%")
+    print(f"年化收益       : {annual_return:.2f}%")
+    print(f"夏普比率       : {sharpe:.4f}")
+    print(f"ATR平均SL/TP   : {atr_sl_avg_pct:.3f}% / {atr_tp_avg_pct:.3f}%")
+    print(f"1m信号触发率    : {one_minute_trigger_rate:.2f}%")
+    print(f"RSI辅助触发率   : {rsi_aux_rate:.2f}%")
+    print(f"MACD确认率      : {macd_confirm_rate:.2f}%")
+    print(f"最强基因       : {getattr(BEST_GENE, 'name', 'N/A')}")
+    print(f"最强基因评分   : {float(getattr(BEST_GENE, 'score', 0.0)):.4f}")
+    print(f"1m数据使用情况  : {ONE_MINUTE_BARS} bars mapped->5m {len(df)} bars")
+    print(f"每日风控触发次数: {DAILY_RISK_TRIGGER_COUNT}")
+    if LAST_KELLY_SAMPLE:
+        print(
+            "凯利仓位示例   : "
+            f"win_rate={LAST_KELLY_SAMPLE['rolling_win_rate']:.4f}, "
+            f"kelly={LAST_KELLY_SAMPLE['kelly_fraction']:.4f}, "
+            f"size_frac={LAST_KELLY_SAMPLE['size_fraction']:.4f}, "
+            f"size_units={LAST_KELLY_SAMPLE['size_units']:.8f}, "
+            f"order_size={LAST_KELLY_SAMPLE['order_size']}"
+        )
+    print("========================================")
+    print("Summary exported      : backtest_result.csv")
+    print("Chart exported        : backtest_chart.html")
+
+
+if __name__ == "__main__":
+    run_backtest()

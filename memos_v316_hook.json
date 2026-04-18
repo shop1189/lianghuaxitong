@@ -1,0 +1,31 @@
+{
+  "signals_date": "",
+  "by_symbol": {
+    "ETH/USDT": {
+      "signals_today_seen": 115,
+      "last_virt_sig_key": "2026-04-16|ETH/USDT|偏空（轻）|-1"
+    },
+    "BTC/USDT": {
+      "signals_today_seen": 85,
+      "last_virt_sig_key": "2026-04-16|BTC/USDT|偏多（轻）|1"
+    },
+    "DOGE/USDT": {
+      "signals_today_seen": 56,
+      "last_virt_sig_key": "2026-04-16|DOGE/USDT|偏空（轻）|-1"
+    },
+    "XRP/USDT": {
+      "signals_today_seen": 60,
+      "last_virt_sig_key": "2026-04-16|XRP/USDT|偏空（轻）|-1"
+    },
+    "BNB/USDT": {
+      "signals_today_seen": 62,
+      "last_virt_sig_key": "2026-04-16|BNB/USDT|偏空（轻）|-1"
+    },
+    "SOL/USDT": {
+      "signals_today_seen": 74,
+      "last_virt_sig_key": "2026-04-16|SOL/USDT|偏多（轻）|1"
+    }
+  },
+  "signals_today_seen": 0,
+  "last_virt_sig_key": "|SOL/USDT|偏空（轻）|0"
+}

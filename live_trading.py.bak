@@ -1,0 +1,209 @@
+"""
+实盘 / 决策快照：5m K 与决策页数据（V3.16 Gate.io CCXT）。
+live_trading_state.json 路径固定为项目根目录下文件名（与升级前一致）。
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+
+from beijing_time import utc_ms_to_bj_str
+from data_fetcher import fetch_ohlcv as gate_fetch_ohlcv
+from data.fetcher import build_indicator_snapshot
+from indicator_upgrade import detect_kline_pattern, rsi as rsi_series
+
+_STATE_FILE = Path(__file__).resolve().parent / "live_trading_state.json"
+_MEMOS_HOOK = Path(__file__).resolve().parent / "memos_v316_hook.json"
+
+
+def _load_state() -> Dict[str, Any]:
+    try:
+        raw = _STATE_FILE.read_text(encoding="utf-8")
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+
+def _tf_trend_word(closes: List[float], stride: int) -> str:
+    if len(closes) < stride * 3:
+        return "震荡"
+    sampled = closes[::stride][-40:]
+    if len(sampled) < 3:
+        return "震荡"
+    chg = (sampled[-1] - sampled[0]) / max(sampled[0], 1e-12) * 100
+    if chg > 0.04:
+        return "上涨"
+    if chg < -0.04:
+        return "下跌"
+    return "震荡"
+
+
+def _calc_probs(rsi_1m: float, trend_score: float) -> tuple[float, float]:
+    if rsi_1m < 30:
+        prob_up = 65 + trend_score * 10
+    elif rsi_1m > 70:
+        prob_up = 35 - trend_score * 10
+    else:
+        prob_up = 50 + trend_score * 5
+    prob_up = max(30.0, min(70.0, prob_up))
+    prob_up = round(prob_up, 1)
+    prob_down = round(100.0 - prob_up, 1)
+    return prob_up, prob_down
+
+
+def _fetch_latest_5m_candle(symbol: str) -> Optional[Dict[str, Any]]:
+    rows: List[List[Any]] = gate_fetch_ohlcv(symbol, timeframe="5m", limit=2)
+    if not rows:
+        return None
+    ts, o, h, l, c, v = rows[-1]
+    return {
+        "time": int(ts),
+        "open": float(o),
+        "high": float(h),
+        "low": float(l),
+        "close": float(c),
+        "volume": float(v),
+    }
+
+
+def get_v313_decision_snapshot(
+    force_refresh: bool = True, symbol: str = "SOL/USDT"
+) -> Dict[str, Any]:
+    """供 /decision 页面使用：指标 + 关键价位 + 状态文件（只读）。"""
+    snap = build_indicator_snapshot(symbol, 500)
+    klines: List[Dict[str, Any]] = snap.get("klines") or []
+    state = _load_state()
+
+    closes = [float(k["close"]) for k in klines]
+    rsi_1m = 50.0
+    if len(closes) >= 15:
+        s = rsi_series(pd.Series(closes), 14)
+        rsi_1m = float(s.iloc[-1]) if pd.notna(s.iloc[-1]) else 50.0
+
+    t5 = _tf_trend_word(closes, 5)
+    t15 = _tf_trend_word(closes, 15)
+    t1h = _tf_trend_word(closes, 60)
+    t4h = _tf_trend_word(closes, 240)
+    ts_hi = 1 if t1h == "上涨" else (-1 if t1h == "下跌" else 0)
+    ts_4h = 1 if t4h == "上涨" else (-1 if t4h == "下跌" else 0)
+    trend_score = max(-1.0, min(1.0, (ts_hi + ts_4h) / 2))
+    if t1h == "震荡" and t4h == "震荡":
+        big_trend = "1H+4H 震荡"
+    elif ts_hi >= 0 and ts_4h >= 0:
+        big_trend = "1H+4H 多头趋势"
+    elif ts_hi <= 0 and ts_4h <= 0:
+        big_trend = "1H+4H 空头趋势"
+    else:
+        big_trend = "1H+4H 震荡"
+
+    prob_up, prob_down = _calc_probs(rsi_1m, trend_score)
+
+    patterns = detect_kline_pattern(klines[-64:]) if len(klines) >= 3 else []
+    pat_str = "、".join(patterns[:5]) if patterns else "无特殊形态"
+
+    last_ts = int(klines[-1]["time"]) if klines else 0
+    latest_bar_time = utc_ms_to_bj_str(last_ts) if last_ts else "—"
+
+    cycle_judgment = f"5m={t5} | 15m={t15} | 1H={t1h} | 4H={t4h}"
+    technical_indicators = f"RSI(1m)={rsi_1m:.1f} | K线形态={pat_str}"
+    trend_status = f"1H+4H {big_trend.replace('1H+4H ', '')} | 资金健康：正常"
+
+    entry = float(klines[-1]["close"]) if klines else 0.0
+    sl_price = entry * (1 - 0.003) if entry else None
+    tp1_price = entry * (1 + 0.0012) if entry else None
+    tp2_price = entry * (1 + 0.0045) if entry else None
+
+    cooldown_left = "—"
+    last_iso = state.get("last_signal_bar_iso")
+    if last_iso and klines:
+        try:
+            sig_t = datetime.fromisoformat(last_iso.replace("Z", "+00:00"))
+            last_bar_t = datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc)
+            bars = max(
+                0,
+                int((last_bar_t - sig_t).total_seconds() // 60),
+            )
+            cooldown_left = str(max(0, 3 - (bars % 4)))
+        except Exception:
+            pass
+
+    sig_label = "无"
+    if rsi_1m < 35 and t5 in ("上涨", "震荡"):
+        sig_label = "偏多（轻）"
+    elif rsi_1m > 65 and t5 in ("下跌", "震荡"):
+        sig_label = "偏空（轻）"
+
+    return {
+        "symbol": symbol,
+        "prediction_cycle": "下一根 5 分钟 K线",
+        "latest_bar_time": latest_bar_time,
+        "prob_up_5m": prob_up,
+        "prob_down_5m": prob_down,
+        "big_trend": big_trend,
+        "cycle_judgment": f"周期判断：{cycle_judgment}",
+        "technical_indicators": f"技术指标：{technical_indicators}",
+        "trend_status": trend_status,
+        "prob_model_line": f"概率模型：上涨{prob_up}% | 下跌{prob_down}%",
+        "rsi_1m": rsi_1m,
+        "entry_price": entry,
+        "sl_price": sl_price,
+        "tp1_price": tp1_price,
+        "tp2_price": tp2_price,
+        "signal_label": sig_label,
+        "cooldown_left": cooldown_left,
+        "signals_today": state.get("signals_today", "—"),
+        "last_signal_bar_iso": state.get("last_signal_bar_iso", "—"),
+        "live_trading_state": state,
+        "indicator_snapshot_meta": {
+            "count": snap.get("count"),
+            "source": snap.get("source"),
+            "last_close": snap.get("last_close"),
+        },
+        "candle_5m": _fetch_latest_5m_candle(symbol),
+    }
+
+
+def sync_virtual_memos_from_state(symbol: str, entry_price: float) -> None:
+    """
+    V3.16.2：当 live_trading_state.json 中「今日信号计数」相对上次增加时，
+    向 trade_memory 追加虚拟入场记录（使用当前实时价），与信号倾向是否为「无」无关。
+    """
+    try:
+        ep = float(entry_price)
+    except Exception:
+        return
+    if ep <= 0:
+        return
+    state = _load_state()
+    st_date = str(state.get("signals_date") or "")
+    n = int(state.get("signals_today", 0) or 0)
+    last_sig = int(state.get("last_sig", 0) or 0)
+    hook: Dict[str, Any] = {}
+    if _MEMOS_HOOK.exists():
+        try:
+            hook = json.loads(_MEMOS_HOOK.read_text(encoding="utf-8"))
+        except Exception:
+            hook = {}
+    if hook.get("signals_date") != st_date:
+        hook["signals_date"] = st_date
+        hook["signals_today_seen"] = 0
+    prev = int(hook.get("signals_today_seen", 0) or 0)
+    if n <= prev:
+        return
+    from evolution_core import ai_evo
+
+    for _ in range(n - prev):
+        ai_evo.memory.append_virtual_signal_record(symbol, ep, last_sig)
+    hook["signals_today_seen"] = n
+    _MEMOS_HOOK.write_text(
+        json.dumps(hook, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def start_live_bot_background() -> None:
+    """供 main.py lifespan 调用；完整轮询逻辑可在此扩展。"""
+    pass

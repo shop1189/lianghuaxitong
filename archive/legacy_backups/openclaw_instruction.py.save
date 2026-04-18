@@ -1,0 +1,967 @@
+"""
+🦞 OpenClaw 龙虾系统 - 中文版
+"""
+from fastapi import FastAPI, Form
+from fastapi.responses import HTMLResponse, JSONResponse
+import uvicorn
+import os
+import asyncio
+import json
+import time
+from dotenv import load_dotenv
+from lobster import call as lobster_call
+from data_feed import get_all_data, latest_data
+
+load_dotenv()
+app = FastAPI(title="🦞 OpenClaw 龙虾系统")
+
+# 用户偏好配置（默认）
+DEFAULT_PREFERENCES = {
+    "enabled": False,  # 交易偏好开关，默认关闭
+    "risk_level": "medium",
+    "max_stop_loss_pct": 2.0,
+    "trade_style": "swing",
+    "position_size": "medium",
+    "preferred_leverage": 1,
+    "custom_note": ""
+}
+
+def get_preferences():
+    try:
+        if os.path.exists("preferences.json"):
+            with open("preferences.json", "r", encoding="utf-8") as f:
+                prefs = json.load(f)
+                return {**DEFAULT_PREFERENCES, **prefs}
+    except:
+        pass
+    return DEFAULT_PREFERENCES.copy()
+
+def save_preferences(prefs):
+    with open("preferences.json", "w", encoding="utf-8") as f:
+        json.dump(prefs, f, ensure_ascii=False, indent=2)
+
+def get_current_price():
+    data = get_all_data()
+    price = data.get("btc_price", 0)
+    return price if price > 0 else latest_data.get("btc_price", 73000.0) or 73000.0
+
+def get_entry_record():
+    try:
+        if os.path.exists("last_entry.json"):
+            with open("last_entry.json", "r", encoding="utf-8") as f:
+                return json.load(f)
+    except:
+        pass
+    return None
+
+def save_entry_record(price, side="LONG"):
+    entry = {
+        "entry_price": price,
+        "side": side,
+        "time": time.time()
+    }
+    with open("last_entry.json", "w", encoding="utf-8") as f:
+        json.dump(entry, f)
+    return entry
+
+def get_reversal_status():
+    try:
+        if os.path.exists("instruction.log"):
+            with open("instruction.log", "r", encoding="utf-8") as f:
+                for line in reversed(f.readlines()[-50:]):
+                    if "AI_ALERT" in line or "立即平仓" in line:
+                        return "警报"
+    except:
+        pass
+    return "正常"
+
+async def check_reversal():
+    entry = get_entry_record()
+    if not entry:
+        return None
+    
+    entry_price = entry.get("entry_price", 0)
+    side = entry.get("side", "LONG")
+    current_price = get_current_price()
+    prefs = get_preferences()
+    max_loss = prefs.get("max_stop_loss_pct", 2.0)
+    
+    if entry_price == 0 or current_price == 0:
+        return None
+    
+    if side == "LONG":
+        pnl_pct = (current_price - entry_price) / entry_price * 100
+    else:
+        pnl_pct = (entry_price - current_price) / entry_price * 100
+    
+    if pnl_pct < -max_loss:
+        return f"亏损 {pnl_pct:.2f}%"
+    
+    return None
+
+async def get_ai_decision_with_prefs(price, fear_greed, prefs, entry=None):
+    try:
+        # 构建基础信息
+        # 适配原prefs字段名，映射为中文key（核心兼容改动）
+        prefs_mapped = {
+            "风险偏好": {
+                "low": "保守",
+                "medium": "平衡",
+                "high": "激进"
+            }.get(prefs.get("risk_level", "medium"), "平衡"),
+            "交易风格": {
+                "scalp": "超短线",
+                "day": "日内",
+                "swing": "波段",
+                "long": "长线"
+            }.get(prefs.get("trade_style", "swing"), "波段"),
+            "最大止损(%)": prefs.get("max_stop_loss_pct", 2.0),
+            "杠杆倍数(x)": prefs.get("preferred_leverage", 1)
+        }
+        
+        # 1. 基础信息
+        base_info = f"""
+        当前BTC价格：${price:.0f}
+        恐惧贪婪指数：{fear_greed}（0-100，越低越恐慌，越高越贪婪）
+        用户设置：
+        - 风险偏好：{prefs_mapped['风险偏好']}
+        - 交易风格：{prefs_mapped['交易风格']}
+        - 最大止损：{prefs_mapped['最大止损(%)']}%
+        - 杠杆倍数：{prefs_mapped['杠杆倍数(x)']}x
+        """
+        
+        # 2. 核心：自适应多空判断规则（均衡风格）
+        direction_logic = """
+        【决策规则（必须严格遵守）】
+        1. 恐惧贪婪指数 ≤ 30（极度恐慌）→ 优先建议「做多」，止损严格控制在用户设置的0.1%-0.3%
+        2. 恐惧贪婪指数 ≥ 70（极度贪婪）→ 优先建议「做空」，止损严格控制在用户设置的0.1%-0.3%
+        3. 恐惧贪婪指数 30-70（中性）→ 建议「观望」，不建议开仓
+        4. 所有决策必须适配用户设置的100倍杠杆，止损不得超过0.3%、不得低于0.1%
+        """
+        
+        # 3. 输出格式要求（适配现有UI展示）
+        output_format = """
+        【输出格式（必须严格按此输出）】
+        **【决策建议】xxx**（只能是：做多/做空/观望）
+        **【入场理由】**
+        （1-2句说明判断依据）
+        **【风险提示】**
+        （1-2句说明当前风险点）
+        **【精确点位】**
+        *建议入场价：xxx
+        *止损价：xxx
+        *止盈分批：xxx
+
+⚠️ 注意：这只是AI分析建议，实际交易决策请自行判断！
+"""
+        
+        # 拼接完整提示词（保留持仓信息，兼容原有逻辑）
+        position_info = ""
+        if entry:
+            entry_price = entry.get('entry_price', 0)
+            pnl = ((price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+            position_info = f"\n当前持仓：{entry.get('side', 'LONG')} @ ${entry_price:,.0f} (盈亏: {pnl:+.2f}%)"
+        
+        prompt = base_info + position_info + direction_logic + output_format
+用中文清晰写出分析结果。"""
+        
+        loop = asyncio.get_event_loop()
+        decision = await asyncio.wait_for(
+            loop.run_in_executor(None, lobster_call, prompt),
+            timeout=20.0
+        )
+        return decision
+    except:
+        return "AI决策超时"
+
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    prefs = get_preferences()
+    btc_price = get_current_price()
+    latest_data["btc_price"] = btc_price
+    fear_greed = latest_data.get("fear_greed", 50)
+    
+    entry = get_entry_record()
+    decision = await get_ai_decision_with_prefs(btc_price, fear_greed, prefs, entry)
+    reversal = await check_reversal()
+    reversal_status = reversal if reversal else "正常"
+    
+    # 入场盈亏计算
+    pnl_html = ""
+    if entry:
+        entry_price = entry.get('entry_price', 0)
+        pnl = ((btc_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+        pnl_color = "#10a37f" if pnl >= 0 else "#ef4146"
+        pnl_sign = "+" if pnl >= 0 else ""
+        pnl_html = f'<span style="color: {pnl_color}; font-weight: 600;">{pnl_sign}{pnl:.2f}%</span>'
+    
+    # 情绪中文
+    if fear_greed < 30:
+        sentiment_color = "#ef4146"
+        sentiment_text = "极度恐慌"
+    elif fear_greed < 50:
+        sentiment_color = "#f59e0b"
+        sentiment_text = "恐慌"
+    elif fear_greed < 70:
+        sentiment_color = "#10a37f"
+        sentiment_text = "贪婪"
+    else:
+        sentiment_color = "#ef4146"
+        sentiment_text = "极度贪婪"
+    
+    # 风险偏好中文
+    risk_cn = {"low": "保守", "medium": "平衡", "high": "激进"}.get(prefs.get("risk_level"), "平衡")
+    style_cn = {"scalp": "超短线", "day": "日内", "swing": "波段", "long": "长线"}.get(prefs.get("trade_style"), "波段")
+    
+    # 用于 JavaScript 的当前价格
+    current_price = f"{btc_price:.2f}"
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta http-equiv="refresh" content="30">
+        <title>OpenClaw - AI交易助手</title>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+        <style>
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            
+            body {{
+                font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+                background: #ffffff;
+                color: #374151;
+                line-height: 1.6;
+            }}
+            
+            /* Header */
+            .header {{
+                background: #ffffff;
+                border-bottom: 1px solid #e5e7eb;
+                padding: 16px 24px;
+                position: sticky;
+                top: 0;
+                z-index: 100;
+            }}
+            
+            .header-content {{
+                max-width: 1200px;
+                margin: 0 auto;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+            }}
+            
+            .logo {{
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                font-size: 20px;
+                font-weight: 700;
+                color: #111827;
+            }}
+            
+            .logo-icon {{
+                font-size: 28px;
+            }}
+            
+            .status-badge {{
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 6px 12px;
+                background: #f3f4f6;
+                border-radius: 20px;
+                font-size: 13px;
+                font-weight: 500;
+                color: #6b7280;
+            }}
+            
+            .status-dot {{
+                width: 8px;
+                height: 8px;
+                background: #10a37f;
+                border-radius: 50%;
+                animation: pulse 2s infinite;
+            }}
+            
+            @keyframes pulse {{
+                0%, 100% {{ opacity: 1; }}
+                50% {{ opacity: 0.5; }}
+            }}
+            
+            /* Main Container */
+            .container {{
+                max-width: 900px;
+                margin: 0 auto;
+                padding: 32px 24px;
+            }}
+            
+            /* Price Card */
+            .price-card {{
+                background: linear-gradient(135deg, #111827 0%, #1f2937 100%);
+                border-radius: 16px;
+                padding: 32px;
+                margin-bottom: 24px;
+                color: white;
+                text-align: center;
+            }}
+            
+            .price-label {{
+                font-size: 14px;
+                font-weight: 500;
+                color: #9ca3af;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 8px;
+            }}
+            
+            .price-value {{
+                font-size: 56px;
+                font-weight: 700;
+                color: #ffffff;
+                margin-bottom: 16px;
+            }}
+            
+            .price-sub {{
+                font-size: 14px;
+                color: #9ca3af;
+            }}
+            
+            /* Metrics Grid */
+            .metrics-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 16px;
+                margin-bottom: 24px;
+            }}
+            
+            .metric-card {{
+                background: #f9fafb;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                padding: 20px;
+            }}
+            
+            .metric-card.highlight {{
+                background: #ffffff;
+                border: 2px solid #10a37f;
+            }}
+            
+            .metric-card.warning {{
+                background: #fff7ed;
+                border: 1px solid #fed7aa;
+            }}
+            
+            .metric-label {{
+                font-size: 12px;
+                font-weight: 600;
+                color: #6b7280;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 8px;
+            }}
+            
+            .metric-value {{
+                font-size: 24px;
+                font-weight: 700;
+                color: #111827;
+            }}
+            
+            .metric-sub {{
+                font-size: 13px;
+                color: #6b7280;
+                margin-top: 4px;
+            }}
+            
+            /* AI Decision Card */
+            .decision-card {{
+                background: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                padding: 24px;
+                margin-bottom: 24px;
+            }}
+            
+            .decision-header {{
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                margin-bottom: 16px;
+                padding-bottom: 16px;
+                border-bottom: 1px solid #f3f4f6;
+            }}
+            
+            .decision-icon {{
+                width: 40px;
+                height: 40px;
+                background: #10a37f;
+                border-radius: 10px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 20px;
+            }}
+            
+            .decision-title {{
+                font-size: 16px;
+                font-weight: 600;
+                color: #111827;
+            }}
+            
+            .decision-content {{
+                font-size: 15px;
+                line-height: 1.8;
+                color: #374151;
+                white-space: pre-wrap;
+            }}
+            
+            /* Section */
+            .section {{
+                margin-bottom: 24px;
+            }}
+            
+            .section-title {{
+                font-size: 14px;
+                font-weight: 600;
+                color: #6b7280;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 12px;
+                padding-left: 4px;
+            }}
+            
+            /* Form Styles */
+            .form-card {{
+                background: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                padding: 24px;
+            }}
+            
+            .form-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 16px;
+                margin-bottom: 16px;
+            }}
+            
+            .form-group {{
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+            }}
+            
+            .form-label {{
+                font-size: 13px;
+                font-weight: 500;
+                color: #374151;
+            }}
+            
+            .form-select, .form-input {{
+                padding: 10px 14px;
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                font-size: 14px;
+                background: #ffffff;
+                color: #111827;
+                transition: border-color 0.2s;
+            }}
+            
+            .form-select:focus, .form-input:focus {{
+                outline: none;
+                border-color: #10a37f;
+                box-shadow: 0 0 0 3px rgba(16, 163, 127, 0.1);
+            }}
+            
+            .form-textarea {{
+                width: 100%;
+                min-height: 80px;
+                padding: 12px 14px;
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                font-size: 14px;
+                background: #ffffff;
+                color: #111827;
+                resize: vertical;
+                font-family: inherit;
+            }}
+            
+            .form-textarea:focus {{
+                outline: none;
+                border-color: #10a37f;
+                box-shadow: 0 0 0 3px rgba(16, 163, 127, 0.1);
+            }}
+            
+            .btn {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 8px;
+                padding: 12px 24px;
+                background: #111827;
+                color: #ffffff;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: background 0.2s;
+            }}
+            
+            .btn:hover {{
+                background: #374151;
+            }}
+            
+            .btn-primary {{
+                background: #10a37f;
+            }}
+            
+            .btn-primary:hover {{
+                background: #0d8c6d;
+            }}
+            
+            .btn-success {{
+                background: #059669;
+            }}
+            
+            .btn-success:hover {{
+                background: #047857;
+            }}
+            
+            .btn-danger {{
+                background: #dc2626;
+            }}
+            
+            .btn-danger:hover {{
+                background: #b91c1c;
+            }}
+            
+            /* Toggle Switch */
+            .toggle-switch {{
+                position: relative;
+                display: inline-block;
+                width: 48px;
+                height: 26px;
+            }}
+            
+            .toggle-switch input {{
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }}
+            
+            .toggle-slider {{
+                position: absolute;
+                cursor: pointer;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background-color: #d1d5db;
+                transition: .3s;
+                border-radius: 26px;
+            }}
+            
+            .toggle-slider:before {{
+                position: absolute;
+                content: "";
+                height: 20px;
+                width: 20px;
+                left: 3px;
+                bottom: 3px;
+                background-color: white;
+                transition: .3s;
+                border-radius: 50%;
+            }}
+            
+            .toggle-switch input:checked + .toggle-slider {{
+                background-color: #10a37f;
+            }}
+            
+            .toggle-switch input:checked + .toggle-slider:before {{
+                transform: translateX(22px);
+            }}
+            
+            /* Chat Section */
+            .chat-card {{
+                background: #f9fafb;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                padding: 24px;
+            }}
+            
+            .chat-hint {{
+                font-size: 13px;
+                color: #6b7280;
+                margin-top: 12px;
+            }}
+            
+            /* Footer */
+            .footer {{
+                text-align: center;
+                padding: 24px;
+                font-size: 12px;
+                color: #9ca3af;
+                border-top: 1px solid #e5e7eb;
+                margin-top: 32px;
+            }}
+            
+            /* Responsive */
+            @media (max-width: 640px) {{
+                .price-value {{
+                    font-size: 40px;
+                }}
+                
+                .metrics-grid {{
+                    grid-template-columns: 1fr;
+                }}
+                
+                .form-grid {{
+                    grid-template-columns: 1fr;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <span class="logo-icon">🦞</span>
+                    <span>OpenClaw 龙虾系统</span>
+                </div>
+                <div class="status-badge">
+                    <span class="status-dot"></span>
+                    <span>系统运行中</span>
+                </div>
+            </div>
+        </header>
+        
+        <main class="container">
+            <!-- Price Card -->
+            <div class="price-card">
+                <div class="price-label">比特币价格</div>
+                <div class="price-value">${btc_price:,.2f}</div>
+                <div class="price-sub">实时数据 · 币安</div>
+            </div>
+            
+            <!-- Metrics -->
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">恐惧贪婪指数</div>
+                    <div class="metric-value" style="color: {sentiment_color};">{fear_greed}</div>
+                    <div class="metric-sub">{sentiment_text}</div>
+                </div>
+                
+                {f'''
+                <div class="metric-card highlight">
+                    <div class="metric-label">当前持仓</div>
+                    <div class="metric-value">{entry.get('side', '做多')}</div>
+                    <div class="metric-sub">${entry.get('entry_price', 0):,.2f} · {pnl_html}</div>
+                </div>
+                ''' if entry else ''}
+                
+                <div class="metric-card {('warning' if reversal else '')}">
+                    <div class="metric-label">状态</div>
+                    <div class="metric-value" style="font-size: 18px; color: {'#ef4146' if reversal else '#10a37f'};">{reversal_status}</div>
+                    <div class="metric-sub">止损设定: {prefs.get('max_stop_loss_pct', 2.0)}%</div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">风险偏好</div>
+                    <div class="metric-value" style="font-size: 18px;">{risk_cn}</div>
+                    <div class="metric-sub">{style_cn} · {prefs.get('max_stop_loss_pct', 2.0)}% 止损</div>
+                </div>
+            </div>
+            
+            <!-- AI Decision -->
+            <div class="decision-card">
+                <div class="decision-header">
+                    <div class="decision-icon">🤖</div>
+                    <div class="decision-title">AI 交易决策</div>
+                </div>
+                <div class="decision-content">{decision}</div>
+            </div>
+            
+            <!-- Preferences -->
+            <div class="section">
+                <div class="section-title">交易偏好设置</div>
+                <div class="form-card">
+                    <form action="/set_prefs" method="post" id="prefs-form">
+                        <!-- 开关 -->
+                        <div class="form-group" style="margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid #e5e7eb;">
+                            <label class="form-label" style="display: flex; align-items: center; justify-content: space-between; cursor: pointer;">
+                                <span>🎯 启用交易偏好</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" name="enabled" id="prefs-enabled" value="true" {"checked" if prefs.get('enabled') else ""} onchange="togglePrefs(this)">
+                                    <span class="toggle-slider"></span>
+                                </div>
+                            </label>
+                            <div class="chat-hint" style="margin-top: 8px;">开启后，AI将应用您的风险偏好和交易风格设置</div>
+                        </div>
+                        
+                        <div id="prefs-content" style="display: {'block' if prefs.get('enabled') else 'none'};">
+                            <div class="form-grid">
+                                <div class="form-group">
+                                    <label class="form-label">风险偏好</label>
+                                    <select name="risk_level" class="form-select">
+                                        <option value="low" {"selected" if prefs.get('risk_level') == 'low' else ""}>🛡️ 保守型</option>
+                                        <option value="medium" {"selected" if prefs.get('risk_level') == 'medium' else ""}>⚖️ 平衡型</option>
+                                        <option value="high" {"selected" if prefs.get('risk_level') == 'high' else ""}>🔥 激进型</option>
+                                    </select>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label">交易风格</label>
+                                    <select name="trade_style" class="form-select">
+                                        <option value="scalp" {"selected" if prefs.get('trade_style') == 'scalp' else ""}>⚡ 超短线</option>
+                                        <option value="day" {"selected" if prefs.get('trade_style') == 'day' else ""}>📅 日内交易</option>
+                                        <option value="swing" {"selected" if prefs.get('trade_style') == 'swing' else ""}>📊 波段交易</option>
+                                        <option value="long" {"selected" if prefs.get('trade_style') == 'long' else ""}>🚀 长线持有</option>
+                                    </select>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label">仓位大小</label>
+                                    <select name="position_size" class="form-select">
+                                        <option value="small" {"selected" if prefs.get('position_size') == 'small' else ""}>小仓位</option>
+                                        <option value="medium" {"selected" if prefs.get('position_size') == 'medium' else ""}>中仓位</option>
+                                        <option value="large" {"selected" if prefs.get('position_size') == 'large' else ""}>大仓位</option>
+                                    </select>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label">最大止损 (%)</label>
+                                    <input type="number" name="max_stop_loss_pct" value="{prefs.get('max_stop_loss_pct', 2.0)}" step="0.001" min="0.001" max="50" class="form-input">
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="form-label">杠杆倍数 (x)</label>
+                                    <input type="number" name="preferred_leverage" value="{prefs.get('preferred_leverage', 1)}" step="1" min="1" max="200" class="form-input">
+                                </div>
+                            </div>
+                            
+                            <div class="form-group" style="margin-bottom: 16px;">
+                                <label class="form-label">交易备注</label>
+                                <textarea name="custom_note" class="form-textarea" placeholder="添加你的交易备注，例如：只做大趋势、避开周末等">{prefs.get('custom_note', '')}</textarea>
+                            </div>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-primary">💾 保存偏好设置</button>
+                    </form>
+                </div>
+            </div>
+            
+            <!-- 持仓管理 -->
+            <div class="section">
+                <div class="section-title">持仓管理</div>
+                <div class="form-card">
+                    <div id="position-status" style="margin-bottom: 16px;">
+                        <!-- 持仓状态会通过JS动态更新 -->
+                    </div>
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-primary" onclick="recordEntry()">📝 记录入场</button>
+                        <button type="button" class="btn btn-success" onclick="recordExit('tp')">✅ 记录止盈</button>
+                        <button type="button" class="btn btn-danger" onclick="recordExit('sl')">⛔ 记录止损</button>
+                    </div>
+                    <div class="chat-hint" style="margin-top: 12px;">💡 点击按钮记录您的交易，方便追踪持仓状态</div>
+                </div>
+            </div>
+        </main>
+        
+        <footer class="footer">
+            <p>OpenClaw AI 交易系统 · 由 DeepSeek 和币安提供支持</p>
+        </footer>
+        
+        <script>
+        function togglePrefs(checkbox) {{
+            const content = document.getElementById('prefs-content');
+            if (checkbox.checked) {{
+                content.style.display = 'block';
+            }} else {{
+                content.style.display = 'none';
+            }}
+        }}
+        
+        async function recordEntry() {{
+            const price = prompt("请输入入场价格:", "{current_price}");
+            if (!price) return;
+            
+            const formData = new FormData();
+            formData.append("price", price);
+            
+            try {{
+                const resp = await fetch("/record_entry", {{method: "POST", body: formData}});
+                const data = await resp.json();
+                alert(data.message);
+                location.reload();
+            }} catch (e) {{
+                alert("请求失败: " + e);
+            }}
+        }}
+        
+        async function recordExit(type) {{
+            const typeNames = {{'tp': '止盈', 'sl': '止损', 'manual': '手动'}};
+            const typeName = typeNames[type] || type;
+            if (!confirm("确认记录" + typeName + "平仓?")) return;
+            
+            try {{
+                const resp = await fetch("/record_exit?type=" + type, {{method: "POST"}});
+                const data = await resp.json();
+                alert(data.message);
+                location.reload();
+            }} catch (e) {{
+                alert("请求失败: " + e);
+            }}
+        }}
+        </script>
+    </body>
+    </html>
+    """
+    return html
+
+@app.post("/set_prefs")
+async def set_prefs(
+    enabled: str = Form(""),
+    risk_level: str = Form("medium"),
+    trade_style: str = Form("swing"),
+    position_size: str = Form("medium"),
+    max_stop_loss_pct: float = Form(2.0),
+    preferred_leverage: int = Form(1),
+    custom_note: str = Form("")
+):
+    prefs = {
+        "enabled": enabled == "true",
+        "risk_level": risk_level,
+        "trade_style": trade_style,
+        "position_size": position_size,
+        "max_stop_loss_pct": max_stop_loss_pct,
+        "preferred_leverage": preferred_leverage,
+        "custom_note": custom_note
+    }
+    save_preferences(prefs)
+    
+    return HTMLResponse(content=f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>已保存</title>
+        <meta http-equiv="refresh" content="1;url=/">
+        <style>
+            body {{ font-family: Inter, 'Microsoft YaHei', sans-serif; background: #f9fafb; padding: 50px; text-align: center; }}
+            .msg {{ font-size: 18px; color: #10a37f; font-weight: 600; }}
+        </style>
+    </head>
+    <body>
+        <p class="msg">✓ 偏好设置已保存</p>
+    </body>
+    </html>
+    """)
+
+@app.post("/chat")
+async def chat(message: str = Form(...)):
+    prefs = get_preferences()
+    btc_price = get_current_price()
+    fear_greed = latest_data.get("fear_greed", 50)
+    entry = get_entry_record()
+    
+    context = f"""BTC: ${btc_price:,.0f}, 恐惧贪婪: {fear_greed}, 风险: {prefs.get('risk_level')}, 风格: {prefs.get('trade_style')}"""
+    if entry:
+        pnl = ((btc_price - entry['entry_price']) / entry['entry_price'] * 100)
+        context += f", 持仓: {entry['side']} @ ${entry['entry_price']:,.0f} ({pnl:+.1f}%)"
+    
+    full_prompt = f"{context}\n\n用户问题: {message}\n\n请根据用户的风险偏好回答。"
+    
+    loop = asyncio.get_event_loop()
+    response = await asyncio.wait_for(
+        loop.run_in_executor(None, lobster_call, full_prompt),
+        timeout=30.0
+    )
+    
+    return HTMLResponse(content=f"""
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <title>AI 回复</title>
+        <meta http-equiv="refresh" content="15;url=/">
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+        <style>
+            body {{ font-family: 'Inter', 'Microsoft YaHei', sans-serif; background: #f9fafb; padding: 40px 20px; max-width: 800px; margin: 0 auto; }}
+            .card {{ background: white; border-radius: 12px; padding: 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
+            .header {{ display: flex; align-items: center; gap: 12px; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid #e5e7eb; }}
+            .icon {{ width: 36px; height: 36px; background: #10a37f; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 18px; }}
+            .title {{ font-size: 16px; font-weight: 600; color: #111827; }}
+            .content {{ font-size: 15px; line-height: 1.8; color: #374151; white-space: pre-wrap; }}
+            .back {{ display: inline-flex; margin-top: 24px; padding: 10px 20px; background: #111827; color: white; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <div class="header">
+                <div class="icon">AI</div>
+                <div class="title">AI 交易助手</div>
+            </div>
+            <div class="content">{response}</div>
+            <a href="/" class="back">返回主页</a>
+        </div>
+    </body>
+    </html>
+    """)
+
+@app.post("/record_entry")
+async def record_entry(price: str = Form(...)):
+    """记录入场"""
+    try:
+        entry_price = float(price)
+        save_entry_record(entry_price, "LONG")
+        return JSONResponse({"status": "success", "message": "入场已记录"})
+    except:
+        return JSONResponse({"status": "error", "message": "价格格式错误"})
+
+@app.post("/record_exit")
+async def record_exit(type: str = "manual"):
+    """记录平仓"""
+    entry = get_entry_record()
+    if not entry:
+        return JSONResponse({"status": "error", "message": "没有持仓记录"})
+    
+    # 这里可以记录平仓历史，暂时只是清空当前持仓
+    # 保留 last_entry.json 作为历史记录，但标记为已平仓
+    entry["status"] = "closed"
+    entry["close_type"] = type
+    entry["close_time"] = time.time()
+    entry["close_price"] = get_current_price()
+    
+    # 保存到历史记录
+    history = []
+    try:
+        if os.path.exists("entry_history.json"):
+            with open("entry_history.json", "r") as f:
+                history = json.load(f)
+    except:
+        pass
+    
+    history.append(entry)
+    with open("entry_history.json", "w") as f:
+        json.dump(history[-20:], f)  # 只保留最近20条
+    
+    # 清空当前持仓
+    if os.path.exists("last_entry.json"):
+        os.remove("last_entry.json")
+    
+    return JSONResponse({"status": "success", "message": "平仓已记录"})
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("🦞 OpenClaw 龙虾系统 - 中文版")
+    print("=" * 60)
+    print("访问地址: http://localhost:8080")
+    print("=" * 60)
+    uvicorn.run(app, host="0.0.0.0", port=8080)
+

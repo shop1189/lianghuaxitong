@@ -1,0 +1,553 @@
+"""
+Web / 服务入口：V3.16.5 全中文仪表盘 · /decision（V3.14 规则信号块第一版样式 + memos + 北京时间）。
+"""
+from __future__ import annotations
+
+import html
+import json
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import quote
+from zoneinfo import ZoneInfo
+
+from data_fetcher import fetch_current_ticker_price, log_v316_engine_ready
+
+log_v316_engine_ready()
+
+from fastapi import FastAPI, Query
+from fastapi.responses import HTMLResponse, RedirectResponse
+import uvicorn
+
+from data.fetcher import build_indicator_snapshot
+from data_upgrade import get_fear_greed
+from beijing_time import (
+    format_entry_time_only,
+    trade_memory_record_for_preview,
+    transform_value_for_display,
+    utc_ms_to_bj_str,
+)
+from live_trading import get_v313_decision_snapshot, sync_virtual_memos_from_state
+
+SYMBOL_CHOICES = (
+    "SOL/USDT",
+    "BTC/USDT",
+    "ETH/USDT",
+    "DOGE/USDT",
+    "XRP/USDT",
+    "BNB/USDT",
+)
+
+MEMOS_BANNER = (
+    "系统已开启全自动 memos 模拟记录与自我进化（开平仓与统计均由程序自动完成，您无需手动操作）"
+)
+
+
+def _pick_symbol(raw: str) -> str:
+    s = (raw or "SOL/USDT").strip()
+    return s if s in SYMBOL_CHOICES else "SOL/USDT"
+
+
+def _meta_source_zh(raw: object) -> str:
+    """数据源展示名（与底层字段对应，仅用于页面中文）。"""
+    s = str(raw or "").strip()
+    if s == "gateio_ccxt_v316":
+        return "Gate.io · CCXT（V3.16）"
+    return s
+
+
+_STATE_JSON_KEY_ZH = {
+    "last_signal_bar_iso": "上一根信号 K 线时间（ISO）",
+    "last_counted_signal_iso": "上次已计数的信号时间（ISO）",
+    "signals_today": "今日信号计数",
+    "signals_date": "信号所属日期",
+    "last_sig": "上次信号方向（数值）",
+}
+
+
+def _zh_state_keys_for_display(d: dict) -> dict:
+    """仅用于页面展示：常见字段名中文化，未知键保持原文。"""
+    return {_STATE_JSON_KEY_ZH.get(k, k): v for k, v in d.items()}
+
+
+_BJ = ZoneInfo("Asia/Shanghai")
+
+
+def _utc_ms_bj_plus8(ms: object) -> str:
+    """最新柱：北京时间，带 +08:00 后缀（与 V3.14 第一版展示一致）。"""
+    if ms is None:
+        return "—"
+    try:
+        m = int(ms)
+    except Exception:
+        return "—"
+    if m <= 0:
+        return "—"
+    dt = datetime.fromtimestamp(m / 1000.0, tz=timezone.utc).astimezone(_BJ)
+    return dt.strftime("%Y-%m-%d %H:%M:%S +08:00")
+
+
+def _bars_since_last_signal_1m(last_k_ms: int, last_iso: object) -> int:
+    """距上次信号已 N 根 1m（与 live_trading 冷却逻辑同一时间轴）。"""
+    if not last_iso or not last_k_ms:
+        return 0
+    try:
+        sig_t = datetime.fromisoformat(str(last_iso).replace("Z", "+00:00"))
+        last_bar_t = datetime.fromtimestamp(last_k_ms / 1000.0, tz=timezone.utc)
+        return max(0, int((last_bar_t - sig_t).total_seconds() // 60))
+    except Exception:
+        return 0
+
+
+def _fmt_backtest_price(v: object) -> str:
+    if v is None:
+        return "—"
+    try:
+        return f"{float(v):.4f}"
+    except Exception:
+        return "—"
+
+
+def _build_v314_signal_block(
+    sym: str,
+    km: dict,
+    snap: dict,
+    meta: dict,
+    klines: list,
+    last_k: dict,
+    state: dict,
+) -> str:
+    """V3.14 第一版：规则信号与执行价位整块 HTML（顺序与文案按规格固定）。"""
+    sig_label = str(km.get("signal_label", "")).strip()
+    try:
+        raw = int(state.get("last_sig", 0) or 0)
+    except Exception:
+        raw = 0
+    try:
+        sig_n = int(state.get("signals_today", 0) or 0)
+    except Exception:
+        sig_n = 0
+
+    if sig_label == "无":
+        sug = "开仓建议：观望（无趋势突破信号）"
+    elif sig_label.startswith("偏多"):
+        sug = "开仓建议：参考偏多（轻）"
+    else:
+        sug = "开仓建议：参考偏空（轻）"
+
+    last_ms = int(last_k.get("time") or 0)
+    kcount = int(meta.get("count") or len(klines) or 0)
+    bt_price = _fmt_backtest_price(snap.get("last_close"))
+    latest_col = _utc_ms_bj_plus8(last_ms)
+    cd_rem = str(km.get("cooldown_left", "0")).strip()
+    if cd_rem in ("", "—"):
+        cd_rem = "0"
+    bars_since = _bars_since_last_signal_1m(last_ms, state.get("last_signal_bar_iso"))
+
+    entry = km.get("entry_price")
+    sl = km.get("sl_price")
+    tp1 = km.get("tp1_price")
+    tp2 = km.get("tp2_price")
+    if sig_label == "无":
+        ln_open = "开仓点位：等待信号出现"
+        ln_sl = "止损点位：等待信号出现"
+        ln_tp1 = "第一止盈点：等待信号出现（平50%）"
+        ln_tp2 = "第二止盈点：等待信号出现(runner:全平)"
+    else:
+        ln_open = f"开仓点位：{html.escape(fmt_price(entry))} USDT"
+        ln_sl = f"止损点位：{html.escape(fmt_price(sl))} USDT"
+        ln_tp1 = f"第一止盈点：{html.escape(fmt_price(tp1))} USDT（平50%）"
+        ln_tp2 = f"第二止盈点：{html.escape(fmt_price(tp2))} USDT(runner:全平)"
+
+    ts_footer = datetime.now(_BJ).strftime("%Y-%m-%d %H:%M:%S +08:00")
+
+    h2 = html.escape(f"V3.14 {sym} 纯规则·实时信号")
+    cur_sig = html.escape(f"当前信号：{sig_label} (raw={raw})")
+    sug_e = html.escape(sug)
+
+    body = f"""<h2>{h2}</h2>
+<div class="v314-signal">
+<p>{cur_sig}</p>
+<p>{sug_e}</p>
+<p>回测价（用于信号）：{html.escape(bt_price)} USDT</p>
+<p>·K线根数{kcount}</p>
+<p>·最新柱{html.escape(latest_col)}</p>
+<p>cooldown:3根1m</p>
+<p>·距上次信号已{bars_since}根</p>
+<p>·剩余{html.escape(cd_rem)}根</p>
+<p>参数：手续费0.080%单边 ·凯利cap0.22 ·半凯利仓位比例~0.2125</p>
+<p>执行（与回测一致）：+0.12%平50% ·runner TP±0.45% ·SL≈0.023%(ATR/0.3%合成)</p>
+<p><b>交易执行点位（手动跟单专用）</b></p>
+<p>{ln_open}</p>
+<p>{ln_sl}</p>
+<p>{ln_tp1}</p>
+<p>{ln_tp2}</p>
+<p>今日规则信号次数：{sig_n}（按新出现的信号K线去重累计）</p>
+<p>弱量/里趋势过：已关闭(EXPERIENCE WEAK VOL RATIO=0)</p>
+<p class="v314-ts">{html.escape(ts_footer)}</p>
+</div>"""
+    return body
+
+
+def _zh_decision_copy(text: object) -> str:
+    """将决策文案中的周期缩写改为中文，便于阅读（不改变数值与 RSI 等术语）。"""
+    s = str(text or "")
+    if not s:
+        return s
+    s = s.replace("1H+4H", "1小时+4小时")
+    for a, b in (
+        ("5m=", "5分钟="),
+        ("15m=", "15分钟="),
+        ("1H=", "1小时="),
+        ("4H=", "4小时="),
+    ):
+        s = s.replace(a, b)
+    s = s.replace(" | ", " · ")
+    s = s.replace("RSI(1m)", "RSI（1分钟）")
+    return s
+
+
+def _reflection_suggestion(rep: dict) -> str:
+    if rep.get("status") == "waiting":
+        return "系统持续收集 memos 样本中，建议保持观察并等待足够平仓统计后再调参。"
+    try:
+        wr = float(rep.get("总胜率", 0))
+    except Exception:
+        wr = 0.0
+    if wr >= 55:
+        return "样本总胜率偏高，注意过拟合；可适度收紧开仓条件或拉长冷却间隔。"
+    if wr >= 45:
+        return "胜率处于中性区间，建议继续积累 memos 样本，并观察多空分布与时段规律。"
+    return "近期胜率偏低，建议结合大周期趋势与冷却节奏，避免在震荡区间反复试错。"
+
+
+def _evolution_block() -> str:
+    try:
+        from evolution_core import ai_evo
+
+        rep = ai_evo.report()
+    except Exception as e:
+        return f'<p class="muted">进化统计加载失败：{html.escape(str(e))}</p>'
+
+    if rep.get("status") == "waiting":
+        inner = "<p>暂无已平仓样本；待 <code>trade_memory.json</code> 积累足够记录后将显示统计。</p>"
+        inner += _trade_memory_preview_rows()
+        return inner
+
+    ref = _reflection_suggestion(rep)
+    orders = rep.get("今日订单") or []
+    rows_o = ""
+    for i, o in enumerate(orders[-12:]):
+        p = o.get("profit")
+        if o.get("virtual_signal"):
+            p_disp = "—"
+            res = "模拟入场"
+            cls = str(o.get("close") if o.get("close") is not None else "—")
+        else:
+            p_disp = str(p) if p is not None else "—"
+            res = "盈利" if isinstance(p, (int, float)) and p > 0 else "亏损"
+            cls = str(o.get("close", ""))
+        sym_e = html.escape(str(o.get("symbol", "")))
+        dir_e = html.escape(str(o.get("direction", "")))
+        rows_o += (
+            f"<tr><td>{i+1}</td><td>{html.escape(format_entry_time_only(o))}</td>"
+            f"<td>{dir_e}{(' · ' + sym_e) if sym_e else ''}</td>"
+            f"<td>{html.escape(str(o.get('entry','')))}</td>"
+            f"<td>{html.escape(cls)}</td>"
+            f"<td>{html.escape(p_disp)}</td><td>{html.escape(res)}</td></tr>"
+        )
+
+    tbl = f"""
+<table class="data-table">
+<thead><tr><th>序号</th><th>入场时间</th><th>方向</th><th>入场价</th><th>平仓价</th><th>盈亏（%）</th><th>结果</th></tr></thead>
+<tbody>{rows_o or '<tr><td colspan="7">今日暂无订单</td></tr>'}</tbody>
+</table>
+"""
+    stats = f"""
+<table class="metrics">
+<tr><td>总交易</td><td>{html.escape(str(rep.get("总交易", "")))}</td></tr>
+<tr><td>总赢 / 总亏</td><td>{html.escape(str(rep.get("总赢", "")))} / {html.escape(str(rep.get("总亏", "")))}</td></tr>
+<tr><td>总胜率</td><td>{html.escape(str(rep.get("总胜率", "")))}%</td></tr>
+<tr><td>今日交易（已平仓）</td><td>{html.escape(str(rep.get("今日交易", "")))}</td></tr>
+<tr><td>今日模拟入场</td><td>{html.escape(str(rep.get("今日模拟入场", "")))}</td></tr>
+<tr><td>今日赢 / 今日亏</td><td>{html.escape(str(rep.get("今日赢", "")))} / {html.escape(str(rep.get("今日亏", "")))}</td></tr>
+<tr><td>今日胜率</td><td>{html.escape(str(rep.get("今日胜率", "")))}%</td></tr>
+<tr><td>做多胜率</td><td>{html.escape(str(rep.get("做多胜率", "")))}%</td></tr>
+<tr><td>做空胜率</td><td>{html.escape(str(rep.get("做空胜率", "")))}%</td></tr>
+</table>
+<p class="reflect"><b>反思建议：</b>{html.escape(ref)}</p>
+"""
+    return stats + tbl + _trade_memory_preview_rows()
+
+
+def _trade_memory_preview_rows() -> str:
+    print("DEBUG: main.py _trade_memory_preview_rows 被调用，强制返回30条")
+    from live_trading import trade_memory_preview_rows_html
+
+    return trade_memory_preview_rows_html(30)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        from live_trading import start_live_bot_background
+
+        start_live_bot_background()
+    except Exception as e:
+        print(f"[warn] start_live_bot_background: {e}")
+    yield
+
+
+app = FastAPI(title="longxia_system", lifespan=lifespan)
+
+
+@app.get("/")
+def root():
+    return {"ok": True, "engine": "V3.16", "decision": "/decision?symbol=SOL/USDT"}
+
+
+@app.get("/dashboard")
+def dashboard_redirect(symbol: str = Query("SOL/USDT")):
+    sym = _pick_symbol(symbol)
+    return RedirectResponse(
+        url=f"/decision?symbol={quote(sym, safe='')}", status_code=302
+    )
+
+
+@app.get("/decision", response_class=HTMLResponse)
+async def page_decision(symbol: str = Query("SOL/USDT")):
+    sym = _pick_symbol(symbol)
+    snap = build_indicator_snapshot(sym, 500)
+    km = get_v313_decision_snapshot(force_refresh=True, symbol=sym)
+    fg = get_fear_greed()
+    last_close = snap.get("last_close")
+    try:
+        live_ticker = await fetch_current_ticker_price(sym)
+    except Exception:
+        live_ticker = None
+    px_for_memos = live_ticker if live_ticker is not None else last_close
+    try:
+        if px_for_memos is not None:
+            sync_virtual_memos_from_state(sym, float(px_for_memos))
+    except Exception:
+        pass
+    klines = snap.get("klines") or []
+    last_k = klines[-1] if klines else {}
+    state = km.get("live_trading_state") or {}
+
+    nav_links = []
+    for s in SYMBOL_CHOICES:
+        active = "nav-active" if s == sym else ""
+        nav_links.append(
+            f'<a class="nav-link {active}" href="/decision?symbol={quote(s, safe="")}">{html.escape(s)}</a>'
+        )
+    nav_html = "\n".join(nav_links)
+
+    state_pre = html.escape(
+        json_dumps_safe(_zh_state_keys_for_display(transform_value_for_display(state)))
+    )
+    meta = km.get("indicator_snapshot_meta") or {}
+    evo_html = _evolution_block()
+    v314_signal_html = _build_v314_signal_block(
+        sym, km, snap, meta, klines, last_k, state
+    )
+    qsym = quote(sym, safe="")
+    live_line = fmt_price(live_ticker if live_ticker is not None else last_close)
+    _sp = str(km.get("spot_ticker_price_str") or "").strip() or live_line
+    _fallback_ticker = (
+        f"实时成交价(CCXT ticker,Gate现货)：{_sp} USDT"
+    )
+    if live_ticker is None:
+        ticker_raw = _fallback_ticker
+    else:
+        ticker_raw = km.get("ticker_display_lines") or _fallback_ticker
+    ticker_html = html.escape(ticker_raw).replace("\n", "<br>")
+
+    body = f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>多币种指标看板 · {html.escape(sym)}</title>
+<style>
+:root {{
+  --bg: #0f1419;
+  --panel: #1a2332;
+  --text: #e8eef7;
+  --muted: #8b9bb4;
+  --accent: #5c7cfa;
+  --orange: #fd7e14;
+  --green: #51cf66;
+  --banner: linear-gradient(135deg, #2b2149 0%, #1a3d52 50%, #143d2e 100%);
+  --card-shadow: 0 4px 24px rgba(0,0,0,.35);
+}}
+* {{ box-sizing: border-box; }}
+body {{
+  margin: 0; padding: 0;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  background: var(--bg); color: var(--text); min-height: 100vh;
+}}
+.page-wrap {{ max-width: 1040px; margin: 0 auto; padding: 20px 18px 48px; }}
+.memos-banner {{
+  background: var(--banner);
+  border: 1px solid rgba(124, 92, 255, .35);
+  border-radius: 14px;
+  padding: 16px 20px;
+  margin-bottom: 18px;
+  font-size: 1.02rem;
+  line-height: 1.65;
+  text-align: center;
+  color: #f0f4ff;
+  box-shadow: var(--card-shadow);
+}}
+.memos-banner strong {{ color: #ffe066; font-weight: 600; }}
+.v316-tag {{
+  display: inline-block; margin-left: 8px; padding: 2px 10px;
+  font-size: 0.78rem; font-weight: 600;
+  color: #a5d8ff; background: rgba(92, 124, 250, .2);
+  border-radius: 999px; vertical-align: middle;
+}}
+.nav-strip {{
+  display: flex; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 16px;
+  padding: 12px 14px; background: var(--panel); border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.06);
+}}
+.nav-link {{
+  color: #a5b4fc; text-decoration: none; font-size: 0.92rem;
+  padding: 4px 8px; border-radius: 8px;
+}}
+.nav-link:hover {{ background: rgba(255,255,255,.06); color: #fff; }}
+.nav-active {{ color: var(--green) !important; font-weight: 700; }}
+h1 {{
+  font-size: 1.35rem; font-weight: 700; margin: 8px 0 14px;
+  letter-spacing: 0.02em;
+}}
+.subline {{ color: var(--muted); font-size: 0.88rem; margin-bottom: 18px; }}
+.card {{
+  background: var(--panel); border-radius: 14px; padding: 18px 20px; margin: 14px 0;
+  border: 1px solid rgba(255,255,255,.07);
+  box-shadow: var(--card-shadow);
+}}
+.card h2 {{
+  margin: 0 0 12px 0; font-size: 1.05rem; font-weight: 600;
+  color: #fff; border-bottom: 1px solid rgba(255,255,255,.08); padding-bottom: 8px;
+}}
+.card.orange {{ border-left: 4px solid var(--orange); }}
+.card.green {{ border-left: 4px solid var(--green); }}
+.card.memos-evolution {{ border-left: 4px solid var(--accent); }}
+.metrics {{ width: 100%; border-collapse: collapse; font-size: 0.92rem; }}
+.metrics td {{ padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.06); }}
+.metrics td:first-child {{ color: var(--muted); width: 38%; }}
+.data-table {{
+  width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: 10px;
+}}
+.data-table th, .data-table td {{
+  border: 1px solid rgba(255,255,255,.1); padding: 6px 8px; text-align: left;
+}}
+.data-table th {{ background: rgba(0,0,0,.25); color: #c5d4e8; }}
+.data-table pre {{ margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 0.75rem; }}
+.muted {{ color: var(--muted); font-size: 0.88rem; }}
+.reflect {{ margin-top: 14px; padding: 12px; background: rgba(0,0,0,.2); border-radius: 10px; line-height: 1.55; }}
+.refresh-hint {{
+  position: fixed; bottom: 12px; right: 14px; font-size: 0.75rem; color: var(--muted);
+  background: rgba(0,0,0,.5); padding: 6px 12px; border-radius: 8px; z-index: 10;
+}}
+code {{ color: #a5d8ff; font-size: 0.85em; }}
+.wait-big {{
+  font-size: 1.35rem; font-weight: 800; color: #ffe066; text-align: center;
+  padding: 22px 16px; background: rgba(0,0,0,.35); border-radius: 12px;
+  border: 1px solid rgba(255, 224, 102, .35);
+}}
+.v314-signal {{ font-size: 0.92rem; line-height: 1.82; }}
+.v314-signal p {{ margin: 0.2em 0; }}
+.v314-signal .v314-ts {{ color: var(--muted); font-size: 0.88rem; margin-top: 0.65em; }}
+</style></head><body>
+<div class="page-wrap">
+
+<div class="memos-banner">
+<strong>{html.escape(MEMOS_BANNER)}</strong>
+</div>
+
+<div class="nav-strip">{nav_html}</div>
+
+<h1>多币种指标看板<span class="v316-tag">· Gate.io CCXT（数据层 V3.16）</span></h1>
+<p class="subline">当前交易对：<b>{html.escape(sym)}</b>
+&nbsp;·&nbsp; 数据源 <code>{html.escape(_meta_source_zh(meta.get("source")))}</code>
+&nbsp;·&nbsp; 1 分钟 K 线根数 <b>{html.escape(str(meta.get("count", "")))}</b></p>
+
+<div class="card orange">
+<h2>关键指标（下一根 5 分钟 / 概率 / 大周期）</h2>
+<table class="metrics">
+<tr><td>预测周期</td><td>{html.escape(str(km.get("prediction_cycle", "")))}</td></tr>
+<tr><td>最新 K 线时间（北京时间）</td><td>{html.escape(str(km.get("latest_bar_time", "")))}</td></tr>
+<tr><td>涨跌概率（5 分钟）</td><td>上涨 {km.get("prob_up_5m")}%　下跌 {km.get("prob_down_5m")}%</td></tr>
+<tr><td>大周期趋势</td><td>{html.escape(_zh_decision_copy(km.get("big_trend")))}</td></tr>
+<tr><td>决策说明 · 周期</td><td>{html.escape(_zh_decision_copy(km.get("cycle_judgment")))}</td></tr>
+<tr><td>决策说明 · 技术</td><td>{html.escape(_zh_decision_copy(km.get("technical_indicators")))}</td></tr>
+<tr><td>决策说明 · 概率</td><td>{html.escape(_zh_decision_copy(km.get("prob_model_line")))}</td></tr>
+<tr><td>趋势状态</td><td>{html.escape(_zh_decision_copy(km.get("trend_status")))}</td></tr>
+</table></div>
+
+<div class="card green">
+{v314_signal_html}
+</div>
+
+<div class="card">
+<h2>CCXT 1 分钟行情快照</h2>
+<p><span style="font-size:1.15em">{ticker_html}</span>
+&nbsp; | 恐惧与贪婪指数：<b>{html.escape(str(fg))}</b></p>
+<p class="muted">1 分钟 K 线最后一根收盘价（已收盘，用于指标与信号计算）：{html.escape(fmt_price(last_close))} USDT
+&nbsp;·&nbsp; 该根时间（北京时间）：{html.escape(utc_ms_to_bj_str(last_k.get("time")))} &nbsp;|&nbsp; 交易所时间戳（毫秒）：{html.escape(str(last_k.get("time", "")))}</p>
+<p>最后一根 K 线（北京时间 {html.escape(utc_ms_to_bj_str(last_k.get("time")))})：
+开 {html.escape(fmt_price(last_k.get("open")))}　高 {html.escape(fmt_price(last_k.get("high")))}
+　低 {html.escape(fmt_price(last_k.get("low")))}　收 {html.escape(fmt_price(last_k.get("close")))}
+　量 {html.escape(fmt_vol(last_k.get("volume")))}</p>
+<p class="muted">K 线由程序缓存接口拉取（<code>get_pair_klines_1m_cached</code> / <code>fetch_ohlcv_long_history</code>）；顶部「实时成交价」来自 <code>fetch_current_ticker_price</code>（即 <code>fetch_ticker</code> 的 last），与 Gate 网页现价一致。</p>
+</div>
+
+<div class="card memos-evolution">
+<h2>memos 自动进化：样本统计与模拟记录</h2>
+{evo_html}
+</div>
+
+<div class="card">
+<h2>实盘状态文件（live_trading_state.json，只读）</h2>
+<pre style="white-space:pre-wrap;font-size:0.85rem;margin:0;">{state_pre}</pre>
+</div>
+
+<div class="refresh-hint">每 45 秒自动刷新本页 · 保留当前所选交易对</div>
+</div>
+<script>
+setTimeout(function() {{
+  window.location.href = "/decision?symbol={qsym}";
+}}, 45000);
+</script>
+</body></html>"""
+    return HTMLResponse(content=body)
+
+
+def fmt_price(v) -> str:
+    if v is None:
+        return "—"
+    try:
+        return f"{float(v):.6f}".rstrip("0").rstrip(".")
+    except Exception:
+        return "—"
+
+
+def fmt_vol(v) -> str:
+    if v is None:
+        return "—"
+    try:
+        return f"{float(v):.4f}"
+    except Exception:
+        return "—"
+
+
+def json_dumps_safe(obj) -> str:
+    try:
+        return json.dumps(obj, ensure_ascii=False, indent=2)
+    except Exception:
+        return str(obj)
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8080)

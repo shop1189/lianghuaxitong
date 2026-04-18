@@ -1,0 +1,4 @@
+timestamp=2026-04-10T15:29:06Z
+hermes_status=ok
+inbox_path=/opt/hermes-sync/inbox
+outbox_path=/opt/hermes-sync/outbox

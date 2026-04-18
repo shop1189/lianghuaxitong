@@ -1,0 +1,21 @@
+Git 基线与回退（longxia_system）
+================================
+
+已建立仓库与标签，便于「只回代码、不动本地数据」。
+
+常用命令
+--------
+  git tag -l                          # 查看标签
+  git log --oneline -5                # 最近提交
+
+回到标记的基线（仅影响已纳入 Git 的代码文件）：
+  git checkout baseline-2026-04-18
+
+回到当前分支最新：
+  git checkout main
+
+说明
+----
+  .gitignore 已排除：venv/、logs/、trade_memory.json、live_trading_state.json、
+  outputs/、backups/、memos_ref/ 等。回退不会删除这些本地文件；若代码与数据
+  格式不匹配，需单独对照当时的 schema 说明。

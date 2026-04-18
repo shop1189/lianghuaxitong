@@ -1,0 +1,30 @@
+# Secrets（勿提交）
+.env
+.env.*
+!.env.example
+
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# 运行期大文件 / 日志（恢复代码时不必跟这些数据绑死）
+logs/
+*.log
+nohup.out
+trade_memory.json
+live_trading_state.json
+outputs/
+backups/
+*.tar.gz
+
+# 参考子树（体积大；若需纳入版本可从此行删除）
+memos_ref/
+
+# IDE
+.idea/
+.vscode/
+.cursor/

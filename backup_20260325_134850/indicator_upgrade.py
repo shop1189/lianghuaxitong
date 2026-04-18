@@ -1,0 +1,137 @@
+import numpy as np
+import pandas as pd
+import talib
+from typing import List, Dict
+
+# 指标配置
+INDICATORS = {
+    "rsi_period": 14,
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal": 9,
+    "bollinger_period": 20,
+    "bollinger_dev": 2
+}
+
+# ========== EMA ==========
+def ema(series: pd.Series, period: int) -> pd.Series:
+    return series.ewm(span=period, adjust=False).mean()
+
+# ========== RSI(14) ==========
+def rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+# ========== MACD（快慢线 + 信号线 + 柱状） ==========
+def macd(series: pd.Series):
+    fast_ema = ema(series, INDICATORS["macd_fast"])
+    slow_ema = ema(series, INDICATORS["macd_slow"])
+    macd_line = fast_ema - slow_ema
+    signal_line = ema(macd_line, INDICATORS["macd_signal"])
+    hist = macd_line - signal_line
+    return macd_line, signal_line, hist
+
+# ========== 布林带 ==========
+def bollinger(series: pd.Series):
+    period = INDICATORS["bollinger_period"]
+    dev = INDICATORS["bollinger_dev"]
+    middle = series.rolling(window=period).mean()
+    std = series.rolling(window=period).std()
+    upper = middle + dev * std
+    lower = middle - dev * std
+    return upper, middle, lower
+
+# ========== 支撑位 / 阻力位 ==========
+def support_resistance(klines: List[Dict]):
+    lows = [x["low"] for x in klines]
+    highs = [x["high"] for x in klines]
+    support = np.percentile(lows, 10)
+    resistance = np.percentile(highs, 90)
+    return round(support, 2), round(resistance, 2)
+
+# ========== 成交量放量确认 ==========
+def volume_analysis(klines: List[Dict]):
+    if len(klines) < 20:
+        return "⚪ 平量"
+    volumes = [x["volume"] for x in klines[-20:]]
+    avg_vol = np.mean(volumes[:-1])
+    current = volumes[-1]
+    if current > avg_vol * 1.3:
+        return "🔴 放量"
+    elif current < avg_vol * 0.7:
+        return "🟢 缩量"
+    return "⚪ 平量"
+
+# ========== K线形态（完整版：单根 + 组合）==========
+def detect_kline_pattern(klines: List[Dict]) -> List[str]:
+    if len(klines) < 3:
+        return []
+
+    open_arr = np.array([x["open"] for x in klines], dtype=float)
+    high_arr = np.array([x["high"] for x in klines], dtype=float)
+    low_arr = np.array([x["low"] for x in klines], dtype=float)
+    close_arr = np.array([x["close"] for x in klines], dtype=float)
+
+    signals = []
+
+    # 反转形态
+    if talib.CDLHAMMER(open_arr, high_arr, low_arr, close_arr)[-1] != 0:
+        signals.append("🔨 锤头线（底部反转）")
+    if talib.CDLSHOOTINGSTAR(open_arr, high_arr, low_arr, close_arr)[-1] != 0:
+        signals.append("🌠 流星线（顶部反转）")
+    if talib.CDLENGULFING(open_arr, high_arr, low_arr, close_arr)[-1] > 0:
+        signals.append("🔥 看涨吞没（强反转）")
+    if talib.CDLENGULFING(open_arr, high_arr, low_arr, close_arr)[-1] < 0:
+        signals.append("💥 看跌吞没（强反转）")
+    if talib.CDLHARAMI(open_arr, high_arr, low_arr, close_arr)[-1] > 0:
+        signals.append("📌 看涨孕线")
+    if talib.CDLHARAMI(open_arr, high_arr, low_arr, close_arr)[-1] < 0:
+        signals.append("📌 看跌孕线")
+    if talib.CDLDARKCLOUDCOVER(open_arr, high_arr, low_arr, close_arr)[-1] != 0:
+        signals.append("☁️ 乌云盖顶（见顶）")
+    if talib.CDLPIERCING(open_arr, high_arr, low_arr, close_arr)[-1] != 0:
+        signals.append("☀️ 刺透形态（见底）")
+    if talib.CDLMORNINGSTAR(open_arr, high_arr, low_arr, close_arr)[-1] != 0:
+        signals.append("⭐ 启明星（大底）")
+    if talib.CDLEVENINGSTAR(open_arr, high_arr, low_arr, close_arr)[-1] != 0:
+        signals.append("🌙 黄昏星（大顶）")
+    if talib.CDL3WHITESOLDIERS(open_arr, high_arr, low_arr, close_arr)[-1] != 0:
+        signals.append("⚔️ 三白兵（强势上涨）")
+    if talib.CDL3BLACKCROWS(open_arr, high_arr, low_arr, close_arr)[-1] != 0:
+        signals.append("⚫ 三只乌鸦（强势下跌）")
+    if talib.CDLDOJI(open_arr, high_arr, low_arr, close_arr)[-1] != 0:
+        signals.append("✧ 十字星（变盘预警）")
+
+    # 三连组合
+    close_vals = [x["close"] for x in klines]
+    if len(close_vals) >= 3:
+        if close_vals[-1] > close_vals[-2] > close_vals[-3]:
+            signals.append("📈 三连阳（趋势延续）")
+        elif close_vals[-1] < close_vals[-2] < close_vals[-3]:
+            signals.append("📉 三连阴（趋势延续）")
+    # ========== 新增：经典组合形态 ==========
+    # 上升/下降三法
+    if talib.CDLRISEFALL3METHODS(open_arr, high_arr, low_arr, close_arr)[-1] > 0:
+        signals.append("📶 上升三法（趋势延续）")
+    if talib.CDLRISEFALL3METHODS(open_arr, high_arr, low_arr, close_arr)[-1] < 0:
+        signals.append("📉 下降三法（趋势延续）")
+    # 分离线（看涨/看跌）
+    if talib.CDLSEPARATINGLINES(open_arr, high_arr, low_arr, close_arr)[-1] > 0:
+        signals.append("📶 看涨分离线（趋势延续）")
+    if talib.CDLSEPARATINGLINES(open_arr, high_arr, low_arr, close_arr)[-1] < 0:
+        signals.append("📉 看跌分离线（趋势延续）")
+    # 顶/底分型（手动判断）
+    if len(klines) >= 3:
+        # 顶分型：中间K线最高，左右两边都低
+        if high_arr[-2] > high_arr[-1] and high_arr[-2] > high_arr[-3]:
+            if low_arr[-2] > low_arr[-1] and low_arr[-2] > low_arr[-3]:
+                signals.append("🔺 顶分型（见顶预警）")
+        # 底分型：中间K线最低，左右两边都高
+        if low_arr[-2] < low_arr[-1] and low_arr[-2] < low_arr[-3]:
+            if high_arr[-2] < high_arr[-1] and high_arr[-2] < high_arr[-3]:
+                signals.append("🔻 底分型（见底预警）")
+
+    return signals
