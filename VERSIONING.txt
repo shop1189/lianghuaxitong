@@ -35,3 +35,10 @@ Git 基线与回退（longxia_system）
 
   说明：不存在「绝对 100%」除非连 venv、整盘镜像一起备份；对日常开发，
   代码用 Git + 数据用定期 tar 已足够。
+
+当前推荐复原点（2026-04-18）
+---------------------------
+  · 代码标签：restore-2026-04-18  （已 push GitHub）
+      git fetch origin && git checkout restore-2026-04-18
+  · 数据快照（本机）：backups/longxia_data_20260418_141102.tar.gz
+      请下载保存到云盘；复原时解压覆盖项目根目录后再启动服务。
