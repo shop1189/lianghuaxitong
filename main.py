@@ -123,14 +123,60 @@ def _rr_gross_net_str(r: dict) -> str:
         return "—"
 
 
+def _infer_close_reason_from_levels(r: dict) -> str:
+    """与 live_trading._virtual_hit_and_close 判定顺序一致（SL 优先于 TP3/TP2/TP1）。"""
+    try:
+        c = float(r.get("close"))
+    except (TypeError, ValueError):
+        return ""
+    d = str(r.get("direction") or "做多")
+    if d == "模拟入场":
+        d = "做多"
+    try:
+        sl = float(r["sl"])
+        tp1 = float(r["tp1"])
+        tp2 = float(r["tp2"])
+        tp3 = float(r["tp3"])
+    except Exception:
+        return ""
+    if d == "做多":
+        if c <= sl:
+            return "SL"
+        if c >= tp3:
+            return "TP3"
+        if c >= tp2:
+            return "TP2"
+        if c >= tp1:
+            return "TP1"
+    elif d == "做空":
+        if c >= sl:
+            return "SL"
+        if c <= tp3:
+            return "TP3"
+        if c <= tp2:
+            return "TP2"
+        if c <= tp1:
+            return "TP1"
+    return ""
+
+
 def _result_cn(r: dict) -> str:
-    cr = r.get("close_reason")
+    if r.get("profit") is None:
+        return "未平"
+    cr = str(r.get("close_reason") or "").strip()
+    if cr not in ("TP1", "TP2", "TP3", "SL"):
+        cr = _infer_close_reason_from_levels(r)
+    try:
+        pnl = float(r.get("profit") or 0)
+    except (TypeError, ValueError):
+        pnl = 0.0
+    # 亏损单不应显示为止盈（推断价与字段偶发不一致时）
+    if pnl < 0 and cr in ("TP1", "TP2", "TP3"):
+        cr = "SL"
     if cr in ("TP1", "TP2", "TP3"):
         return f"止盈·{cr}"
     if cr == "SL":
-        return "止损"
-    if r.get("profit") is None:
-        return "未平"
+        return "止损·SL"
     return "—"
 
 
@@ -165,6 +211,27 @@ def _reflection_experiment(exp_closed: list[dict]) -> str:
     if wr >= 45:
         return "【规则实验轨】胜率处于中性区间，建议继续积累 memos 样本，并观察多空分布与时段规律。"
     return "【规则实验轨】近期胜率偏低，建议结合大周期趋势与冷却节奏，避免在震荡区间反复试错。"
+
+
+def _memos_reflect_bar_html() -> str:
+    """首页靠前展示：换日说明 + 反思建议（与下方 memos 统计同源）。"""
+    try:
+        trades = _load_trades_flat()
+        exp_closed = [
+            r
+            for r in trades
+            if not r.get("virtual_signal") and r.get("profit") is not None
+        ]
+        text = _reflection_experiment(exp_closed)
+    except Exception:
+        text = "【规则实验轨】反思建议加载失败。"
+    return f"""<div class="memos-day-meta">
+<span>换日清空当日列表</span>
+<span>约每 45 秒更新（随决策页加载刷新）</span>
+</div>
+<div class="reflect reflect-home">
+<b>反思建议：</b>{html.escape(text)}
+</div>"""
 
 
 def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
@@ -272,10 +339,7 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
             f"{_MEMOS_FEE_PCT}%，则净结果可能为亏，净胜率会低于毛胜率；详见下方「毛盈亏分桶」。"
         )
 
-    reflect = _reflection_experiment(exp_closed)
-
     sec1 = f"""
-<p class="reflect" style="margin-bottom:14px"><b>反思建议：</b>{html.escape(reflect)}</p>
 <table class="metrics">
 <tr><td colspan="2"><strong>一、规则实验轨</strong>（virtual_signal 为假：本地 memos，用于大版本同步后的规则/门槛实验，与主观察池统计分列）</td></tr>
 <tr><td>总交易（累计已平仓笔数）</td><td>{len(exp_closed)}</td></tr>
@@ -844,6 +908,14 @@ h1 {{
 .data-table pre {{ margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 0.75rem; }}
 .muted {{ color: var(--muted); font-size: 0.88rem; }}
 .reflect {{ margin-top: 14px; padding: 12px; background: rgba(0,0,0,.2); border-radius: 10px; line-height: 1.55; }}
+.memos-day-meta {{
+  display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px;
+  font-size: 0.82rem; color: var(--muted); margin-bottom: 10px; padding: 0 4px;
+}}
+.reflect-home {{
+  margin: 0 0 16px 0; padding: 12px 14px; background: rgba(0,0,0,.22);
+  border-radius: 12px; border: 1px solid rgba(255,255,255,.08); line-height: 1.6;
+}}
 .refresh-hint {{
   position: fixed; bottom: 12px; right: 14px; font-size: 0.75rem; color: var(--muted);
   background: rgba(0,0,0,.5); padding: 6px 12px; border-radius: 8px; z-index: 10;
@@ -862,6 +934,8 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 {_memos_banner_html()}
 
 <div class="nav-strip">{nav_html}</div>
+
+{_memos_reflect_bar_html()}
 
 <h1>多币种指标看板<span class="v316-tag">· Gate.io CCXT（数据层 V3.16）</span></h1>
 <p class="subline">当前交易对：<b>{html.escape(sym)}</b>
