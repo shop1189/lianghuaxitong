@@ -19,3 +19,19 @@ Git 基线与回退（longxia_system）
   .gitignore 已排除：venv/、logs/、trade_memory.json、live_trading_state.json、
   outputs/、backups/、memos_ref/ 等。回退不会删除这些本地文件；若代码与数据
   格式不匹配，需单独对照当时的 schema 说明。
+
+云上备份与「尽量 100% 恢复」
+---------------------------
+  A) 代码：已推 GitHub（shop1189/lianghuaxitong）。恢复某版本：
+       git fetch origin && git checkout <标签或提交号>
+  B) 运行数据（trade_memory、状态 JSON、.env 等）：不进 Git，用脚本打 tar：
+       bash scripts/backup_full_snapshot.sh
+     生成文件在 backups/longxia_data_*.tar.gz，请自行下载到电脑或上传阿里云盘/OSS。
+  C) 完整恢复顺序建议：
+       1. 用 Git 回到目标代码版本
+       2. 停服务（如 systemctl stop longxia-web）
+       3. 解压对应日期的 longxia_data_*.tar.gz 到项目根目录覆盖
+       4. 启服务并验证
+
+  说明：不存在「绝对 100%」除非连 venv、整盘镜像一起备份；对日常开发，
+  代码用 Git + 数据用定期 tar 已足够。
