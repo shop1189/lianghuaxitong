@@ -13,6 +13,7 @@
 
 | 想了解 | 去读 |
 |--------|------|
+| **Cursor / Agent 短约束** | [`AGENTS.md`](AGENTS.md) → [`docs/agent/README.md`](docs/agent/README.md) |
 | 整库升级路线与分阶段事项 | `docs/UPGRADE_PLAN.md` |
 | 项目记忆 / 协作约定（若存在） | `PROJECT_MEMORY.md` |
 | Hermes 与量化协同边界 | `docs/hermes_synergy_framework.md` |
@@ -24,3 +25,7 @@
 ## 主干链路（一句话）
 
 行情与 K 线 → `live_trading.get_v313_decision_snapshot` → 主观察池虚拟写入 + 规则实验轨（`sync_experiment_track_from_snapshot`）→ `trade_memory.json` / 页面展示。
+
+## 可选参考（非主干）
+
+本地若存在 **`memos_ref/`**（体积大、可能 gitignore）：仅作阅读参考，**不**与线上决策快照混为一谈；主干以本仓库 `live_trading` / `main.py` 为准。

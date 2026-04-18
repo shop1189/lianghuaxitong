@@ -22,9 +22,9 @@
 
 ## 阶段 B — 文档与 Hermes 版式（需真人团队排期）
 
-- [ ] `docs/agent/`：若长文继续增多，可做「索引 README + references/ 深内容」拆分  
+- [x] `docs/agent/`：索引 [`docs/agent/README.md`](agent/README.md) + [`docs/agent/references/`](agent/references/)（长文占位）  
 - [ ] Hermes：`hermes_data_health.md` 等保持「结论在前」；若需更省 Token，可摘要更短、明细折叠或独立文件（**不改健康检查逻辑**，仅版式）  
-- [ ] 可选：根目录 `AGENTS.md`（与 README 分工：README 给人，AGENTS 给自动化代理短约束）
+- [x] 根目录 [`AGENTS.md`](../AGENTS.md)（与 README 分工：README 给人，AGENTS 给自动化代理短约束）
 
 ---
 
@@ -39,7 +39,7 @@
 
 - [ ] 报表 / Web：首页只保留状态灯 + 一条建议动作，详情再下钻（与 Hermes 健康报告同一套路）  
 - [ ] 全库文档治理：定期收束散落长说明，避免单文件无限变长  
-- [ ] 子项目（如 `memos_ref/`）是否在 `README.md` 中单列「可选参考」区块，避免与主干混淆  
+- [x] 子项目（如 `memos_ref/`）是否在 `README.md` 中单列「可选参考」区块，避免与主干混淆  
 
 ---
 
