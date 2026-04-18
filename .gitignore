@@ -28,3 +28,6 @@ memos_ref/
 .idea/
 .vscode/
 .cursor/
+
+# 进程号（本地生成）
+*.pid
