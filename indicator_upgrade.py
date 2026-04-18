@@ -229,17 +229,18 @@ class AdvancedIndicatorEngine:
         c = df["close"]
         if len(df) < 60:
             return "数据不足"
-        e9 = ema(c, 9)
+        # 13 / 21 / 60：降低过短周期噪声导致的追趋势倾向（原 9 / 21 / 55）
+        e13 = ema(c, 13)
         e21 = ema(c, 21)
-        e55 = ema(c, 55)
-        a, b, d = e9.iloc[-1], e21.iloc[-1], e55.iloc[-1]
+        e60 = ema(c, 60)
+        a, b, d = e13.iloc[-1], e21.iloc[-1], e60.iloc[-1]
         if a > b > d:
             return "三均线多头排列"
         if a < b < d:
             return "三均线空头排列"
-        if e9.iloc[-2] <= e21.iloc[-2] and a > b:
+        if e13.iloc[-2] <= e21.iloc[-2] and a > b:
             return "短期金叉"
-        if e9.iloc[-2] >= e21.iloc[-2] and a < b:
+        if e13.iloc[-2] >= e21.iloc[-2] and a < b:
             return "短期死叉"
         return "三均线缠绕"
 

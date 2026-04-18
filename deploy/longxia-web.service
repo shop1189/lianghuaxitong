@@ -9,6 +9,8 @@ ExecStart=/usr/bin/python3 /root/longxia_system/main.py
 Restart=on-failure
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1
+Environment=LONGXIA_DYNAMIC_LEVELS=1
+Environment=LONGXIA_SCALED_EXIT=1
 
 [Install]
 WantedBy=multi-user.target
