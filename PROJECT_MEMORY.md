@@ -19,11 +19,11 @@
 - **100% 复原（打补丁前一刻）**：Git 标签 **`restore-pre-v317-patch-2026-04-18`**（提交 `a033433` 及父链）；可选离线包：`/root/longxia_backups/longxia_system-restore-pre-v317-2026-04-18.tar.gz`（`git archive`）。
 - **回滚命令**：`git reset --hard restore-pre-v317-patch-2026-04-18`（需在同一仓库内且已 fetch 标签）。
 
-## 3.1) 阶段 B 前备份（2026-04-18）
+## 3.1) 阶段 B 前备份与文档落地（2026-04-18）
 
-- **标签**：`restore-pre-phase-b-2026-04-18`（提交 `0dfb385` 起可对照）  
+- **备份标签**：`restore-pre-phase-b-2026-04-18` → 提交 **`0dfb385`**（进入阶段 B 文档前的快照）  
 - **离线包**：`/root/longxia_backups/longxia_system-restore-pre-phase-b-2026-04-18.tar.gz`  
-- **内容**：落地 `docs/agent/` 索引、`AGENTS.md` 前的仓库快照（含当时 runtime JSON 变更若已提交）。
+- **阶段 B 文档增量**：提交 **`ff616e3`**（`docs/agent/`、`AGENTS.md`、README 互链；Hermes 健康报告版式仍待真人团队）
 
 ## 4) Hermes 技能包 · 自动入脑（可选 cron）
 
