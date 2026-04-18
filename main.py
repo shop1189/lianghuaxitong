@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import html
 import json
-from typing import Optional
+from typing import Any, List, Optional
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -545,6 +545,29 @@ def _fmt_backtest_price(v: object) -> str:
         return "—"
 
 
+def _ticker_ms_plausible(ms: int) -> bool:
+    """过滤误把价格等字段当成时间戳（否则会显示 1970 年附近）。"""
+    if ms <= 0:
+        return False
+    # 约 2001-09～2100（毫秒）；低于 1e12 的多为秒级误乘或价格
+    return 1_000_000_000_000 <= ms <= 4_102_444_800_000
+
+
+def _normalize_ticker_ts_to_ms(raw: object) -> Optional[int]:
+    """CCXT ticker.timestamp 多为毫秒；秒级则乘 1000。"""
+    if raw is None:
+        return None
+    try:
+        v = int(float(raw))
+        if v <= 0:
+            return None
+        if v < 10**11:
+            v *= 1000
+        return v if _ticker_ms_plausible(v) else None
+    except Exception:
+        return None
+
+
 def _extract_ccxt_ticker_time_bj(tinfo: object, snap: dict) -> str:
     """Gate/CCXT 部分行情不返回 ticker 时间戳；尽量多字段解析，否则用 K 线拉取时刻作参考。"""
     if not isinstance(snap, dict):
@@ -552,44 +575,34 @@ def _extract_ccxt_ticker_time_bj(tinfo: object, snap: dict) -> str:
     if not isinstance(tinfo, dict):
         tinfo = {}
     ts_ms: Optional[int] = None
-    ts = tinfo.get("timestamp")
-    if ts is not None:
-        try:
-            ts_ms = int(float(ts))
-            if ts_ms < 10**11:
-                ts_ms *= 1000
-        except Exception:
-            ts_ms = None
+    ts_ms = _normalize_ticker_ts_to_ms(tinfo.get("timestamp"))
     if ts_ms is None and tinfo.get("datetime") is not None:
-        try:
-            d = tinfo.get("datetime")
-            ts_ms = int(float(d))
-            if ts_ms < 10**11:
-                ts_ms *= 1000
-        except Exception:
-            ts_ms = None
+        ts_ms = _normalize_ticker_ts_to_ms(tinfo.get("datetime"))
     info = tinfo.get("info")
     if ts_ms is None and isinstance(info, dict):
-        for k in ("update_time", "timestamp", "time", "ts", "t", "last"):
+        # 勿用 "last"：在 Gate 等交易所常为最新价，误解析会得到 1970 年。
+        for k in ("update_time", "timestamp", "time", "ts", "t"):
             v = info.get(k)
             if v is None:
                 continue
             try:
                 cand = int(float(v))
+                if cand <= 0:
+                    continue
                 if cand < 10**11:
                     cand *= 1000
-                if cand > 0:
+                if _ticker_ms_plausible(cand):
                     ts_ms = cand
                     break
             except Exception:
                 continue
-    if ts_ms is not None and ts_ms > 0:
+    if ts_ms is not None and _ticker_ms_plausible(ts_ms):
         return utc_ms_to_bj_str(ts_ms)
     ref = snap.get("fetched_at_ms")
     if ref is not None:
         try:
             rms = int(ref)
-            if rms > 0:
+            if _ticker_ms_plausible(rms):
                 return (
                     "参考：本页 K 线拉取时刻 "
                     f"{utc_ms_to_bj_str(rms)}"
@@ -600,7 +613,7 @@ def _extract_ccxt_ticker_time_bj(tinfo: object, snap: dict) -> str:
     klines = snap.get("klines") or []
     last_k = klines[-1] if klines else {}
     last_ms = int(last_k.get("time") or 0)
-    if last_ms > 0:
+    if _ticker_ms_plausible(last_ms):
         return (
             "参考：本页 K 线拉取时刻 "
             f"{utc_ms_to_bj_str(last_ms)}"
@@ -773,6 +786,175 @@ def _evolution_block() -> str:
         return f'<p class="muted">memos 区块渲染失败：{html.escape(str(e))}</p>'
 
 
+def _find_latest_matrix_report_path() -> Optional[Path]:
+    root = Path(__file__).resolve().parent / "outputs"
+    if not root.exists():
+        return None
+    candidates = list(root.rglob("*_matrix_report.json"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def _html_table_from_rows(
+    title: str,
+    headers: List[str],
+    rows: List[List[Any]],
+) -> str:
+    th = "".join(f"<th>{html.escape(str(h))}</th>" for h in headers)
+    body = ""
+    for r in rows:
+        tds = "".join(f"<td>{html.escape(str(c))}</td>" for c in r)
+        body += f"<tr>{tds}</tr>"
+    return f"""<p style="margin-top:14px"><b>{html.escape(title)}</b></p>
+<table class="data-table dense"><thead><tr>{th}</tr></thead><tbody>{body or '<tr><td colspan="99">无数据</td></tr>'}</tbody></table>"""
+
+
+def _backtest_matrix_report_block() -> str:
+    """阶段 A 回测矩阵：读取 outputs 下最新的 *_matrix_report.json（由 scripts/backtest_matrix.py 生成）。"""
+    p = _find_latest_matrix_report_path()
+    if not p:
+        return '<p class="muted" style="margin-top:12px">阶段A回测矩阵报告：尚未生成。运行 <code>python3 scripts/backtest_matrix.py</code> 后刷新本页。</p>'
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        return f'<p class="muted">读取矩阵报告失败：{html.escape(str(e))}</p>'
+
+    rel = p.resolve().relative_to(Path(__file__).resolve().parent)
+    head = f'<p class="muted" style="margin:12px 0 8px 0">阶段A回测矩阵报告（最新：<code>{html.escape(str(rel))}</code> · UTC {html.escape(str(data.get("generated_at_utc") or ""))}）</p>'
+    chunks: List[str] = [head]
+
+    ms = data.get("mode_summary") or {}
+    rows_ms: List[List[Any]] = []
+    for mode in ("experiment", "main"):
+        m = ms.get(mode) or {}
+        rows_ms.append(
+            [
+                mode,
+                m.get("runs"),
+                m.get("avg_total_trades"),
+                m.get("avg_win_rate_pct"),
+                m.get("avg_sum_profit_pct"),
+            ]
+        )
+    chunks.append(
+        _html_table_from_rows(
+            "一、模式汇总（矩阵内全部 run 的简单平均）",
+            ["模式", "run 数", "平均单量", "平均胜率%", "平均合计盈亏%"],
+            rows_ms,
+        )
+    )
+
+    vp = data.get("vs_previous")
+    if isinstance(vp, dict):
+        rows_vp: List[List[Any]] = []
+        bm = vp.get("by_mode") or {}
+        for mode in ("experiment", "main"):
+            d = bm.get(mode) or {}
+            rows_vp.append(
+                [
+                    mode,
+                    d.get("avg_total_trades_delta"),
+                    d.get("avg_win_rate_pct_delta"),
+                    d.get("avg_sum_profit_pct_delta"),
+                ]
+            )
+        chunks.append(
+            f'<p class="muted" style="margin:8px 0 4px 0">相对上期：{html.escape(str(vp.get("previous_report") or ""))} '
+            f'（UTC {html.escape(str(vp.get("previous_generated_at_utc") or ""))}）</p>'
+        )
+        chunks.append(
+            _html_table_from_rows(
+                "一（续）相对上期变化（同一输出目录内上一份报告；lite 与 full 各自对比）",
+                ["模式", "Δ平均单量", "Δ平均胜率%点", "Δ平均合计盈亏%"],
+                rows_vp,
+            )
+        )
+
+    best = data.get("best_by_symbol") or {}
+    rows_b: List[List[Any]] = []
+    for sym in sorted(best.keys()):
+        r = best[sym]
+        if not isinstance(r, dict):
+            continue
+        rows_b.append(
+            [
+                sym,
+                r.get("level_mode"),
+                r.get("entry_cooldown_bars"),
+                r.get("total_trades"),
+                r.get("win_rate_pct"),
+                r.get("sum_profit_pct"),
+            ]
+        )
+    chunks.append(
+        _html_table_from_rows(
+            "二、各币种最优候选（按胜率为主，需满足 min_trades_report）",
+            ["标的", "模式", "冷却(根)", "单量", "胜率%", "合计盈亏%"],
+            rows_b,
+        )
+    )
+
+    evm = data.get("exp_vs_main_same_setting") or []
+    rows_e: List[List[Any]] = []
+    for r in evm:
+        if not isinstance(r, dict):
+            continue
+        rows_e.append(
+            [
+                r.get("symbol"),
+                r.get("entry_cooldown_bars"),
+                r.get("exp_trades"),
+                r.get("main_trades"),
+                r.get("trade_delta"),
+                r.get("exp_win_rate"),
+                r.get("main_win_rate"),
+                r.get("win_rate_delta"),
+            ]
+        )
+    chunks.append(
+        _html_table_from_rows(
+            "三、同设置下 实验轨 − 主观察（单量/胜率差）",
+            [
+                "标的",
+                "冷却",
+                "实验单量",
+                "主池单量",
+                "单量差",
+                "实验胜率",
+                "主池胜率",
+                "胜率差",
+            ],
+            rows_e,
+        )
+    )
+
+    top = data.get("top_candidates") or []
+    rows_t: List[List[Any]] = []
+    for r in top:
+        if not isinstance(r, dict):
+            continue
+        rows_t.append(
+            [
+                r.get("symbol"),
+                r.get("level_mode"),
+                r.get("entry_cooldown_bars"),
+                r.get("total_trades"),
+                r.get("win_rate_pct"),
+                r.get("sum_profit_pct"),
+            ]
+        )
+    chunks.append(
+        _html_table_from_rows(
+            "四、全局候选 Top（启发式排序：胜率 × √(单量)）",
+            ["标的", "模式", "冷却(根)", "单量", "胜率%", "合计盈亏%"],
+            rows_t,
+        )
+    )
+
+    return "\n".join(chunks)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
@@ -922,6 +1104,7 @@ async def page_decision(symbol: str = Query("SOL/USDT")):
     meta = km.get("indicator_snapshot_meta") or {}
     klines_impl_line = _fmt_klines_impl_line(snap, meta)
     evo_html = _evolution_block()
+    matrix_report_html = _backtest_matrix_report_block()
     v314_signal_html = _build_v314_signal_block(
         sym, km, snap, meta, klines, last_k, state
     )
@@ -1120,6 +1303,7 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <div class="card memos-evolution">
 <h2>memos 自动进化：样本统计与模拟记录</h2>
 {evo_html}
+{matrix_report_html}
 </div>
 
 <div class="card">

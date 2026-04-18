@@ -3,12 +3,21 @@
 V3.16.5+ / V3.17.0：高级指标、形态融合、贝叶斯轻量、虚拟单本地写入（修正做空 SL/TP）；本版为发布标识对齐，开仓规则内核未改。
 规则实验轨：sync_experiment_track_from_snapshot — 独立筛选 + 较宽 SL/TP，写入非 virtual_signal。
 
-环境变量速查（规则实验轨 / Kronos-light，重启进程生效）：
+环境变量速查（规则实验轨 / Kronos-light 强化，重启进程生效）：
   LONGXIA_EXPERIMENT_TRACK     关：0|false|no|off；默认开启
   LONGXIA_EXPERIMENT_MODE      kronos_light（默认）| legacy | kronos_model（未接真模型时同 light）
-  LONGXIA_KRONOS_MIN_CONSISTENCY   Kronos-light：|一致性| 门槛，默认 0.08
-  LONGXIA_KRONOS_MIN_PROB_EDGE     Kronos-light：涨跌概率差（百分点），默认 1.5
-  LONGXIA_EXPERIMENT_MIN_CONSISTENCY / LONGXIA_EXPERIMENT_MIN_BAYES  仅 legacy 使用
+  LONGXIA_KRONOS_MIN_PROB_EDGE     kronos_light：涨跌概率差阈值（百分点），默认 18（可试 15/18/20）
+  LONGXIA_EXPERIMENT_MIN_SCORE_ABS   kronos_light：|consistency_score| 下限，默认 0.70
+  LONGXIA_EXPERIMENT_EDGE_CHOP_EXTRA / LONGXIA_EXPERIMENT_EDGE_MID_EXTRA  chop/mid 态额外概率差
+  LONGXIA_EXPERIMENT_SCORE_CHOP_FLOOR / SCORE_MID_FLOOR  chop/mid 态与 MIN_SCORE 取 max
+  LONGXIA_EXPERIMENT_GATE_RSI_DEV    Gate：RSI 偏离 50 的幅度，默认 12
+  LONGXIA_EXPERIMENT_ATR_MIN_PCT     波动过低不做（ATR%/价），默认 0.08
+  LONGXIA_EXPERIMENT_ATR_CHOP_MAX / ATR_TREND_MIN  轻量 regime 分档
+  LONGXIA_EXPERIMENT_WICK_BODY_RATIO  裸K影线/实体比，默认 0.6
+  LONGXIA_EXPERIMENT_PAUSE_SEC       连亏 2 笔后暂停秒数，默认 900
+  LONGXIA_EXPERIMENT_DAY_STOP_PCT    单日实验累计盈亏% 熔断，默认 -1.0
+  LONGXIA_EXPERIMENT_SAME_DIR_COOLDOWN_SEC  亏损后同向再入场冷却（秒），默认 0 关闭
+  LONGXIA_EXPERIMENT_MIN_CONSISTENCY / LONGXIA_EXPERIMENT_MIN_BAYES  仅 legacy
   LONGXIA_EXPERIMENT_SL_PCT / TP1_PCT / TP2_PCT / TP3_PCT  实验轨止损止盈比例
   LONGXIA_EXPERIMENT_SCAN_INTERVAL_SEC  后台全币种扫描间隔（秒），下限约 15
 可选真 Kronos：integrations/kronos_experiment_optional.py（未接模型前勿依赖 kronos_model）。
@@ -36,6 +45,14 @@ from indicator_upgrade import (
     detect_kline_pattern,
     rsi as rsi_series,
 )
+from utils.experiment_track_filters import (
+    atr_percent_proxy,
+    gate_deviation_ok,
+    has_engulfing_or_key_pattern,
+    last_bar_wick_dominant,
+    markov_regime,
+    mtf_aligned,
+)
 
 _MEMOS_PREVIEW_MAX = 30
 _MEMOS_PREVIEW_TABLE_N = 30
@@ -44,6 +61,7 @@ _MEMOS_HOOK = Path(__file__).resolve().parent / "memos_v316_hook.json"
 _THEORY_FILE = Path(__file__).resolve().parent / "trading_theory_library.json"
 _BAYES_FILE = Path(__file__).resolve().parent / "bayes_beta_state.json"
 _TRADE_MEMORY = Path(__file__).resolve().parent / "trade_memory.json"
+_REPO_ROOT = Path(__file__).resolve().parent
 _ADV_ENGINE = AdvancedIndicatorEngine(max_bars=300)
 
 
@@ -624,28 +642,48 @@ def _experiment_entry_filter_legacy(km: Dict[str, Any]) -> bool:
 
 
 def _experiment_entry_filter_kronos_light(km: Dict[str, Any]) -> bool:
-    """Kronos-light：不卡贝叶斯/价位自检；偏多偏空 + 一致性或涨跌概率差（与快照字段对齐，不加载 HF 模型）。"""
+    """Kronos-light：仅强多/强空；概率差、consistency、Gate+裸K、MTF+ATR、regime 调阈值（依赖快照 experiment_*）。"""
     sig = str(km.get("signal_label") or "")
-    if not (sig.startswith("偏多") or sig.startswith("偏空")):
+    if not (sig.startswith("偏多（强）") or sig.startswith("偏空（强）")):
         return False
-    try:
-        cs = float(km.get("consistency_score") or 0.0)
-    except Exception:
-        cs = 0.0
-    min_c = float(os.environ.get("LONGXIA_KRONOS_MIN_CONSISTENCY", "0.08"))
-    if abs(cs) >= min_c:
-        return True
+    regime = str(km.get("experiment_kronos_regime") or "mid")
+    edge_base = float(os.environ.get("LONGXIA_KRONOS_MIN_PROB_EDGE", "18"))
+    edge_chop = float(os.environ.get("LONGXIA_EXPERIMENT_EDGE_CHOP_EXTRA", "4"))
+    edge_mid = float(os.environ.get("LONGXIA_EXPERIMENT_EDGE_MID_EXTRA", "2"))
+    extra = edge_chop if regime == "chop" else (edge_mid if regime == "mid" else 0.0)
+    need_edge = edge_base + extra
     try:
         pu = float(km.get("prob_up_5m") or 0.0)
         pd = float(km.get("prob_down_5m") or 0.0)
     except Exception:
         pu, pd = 0.0, 0.0
-    edge = float(os.environ.get("LONGXIA_KRONOS_MIN_PROB_EDGE", "1.5"))
-    if sig.startswith("偏多") and (pu - pd) >= edge:
-        return True
-    if sig.startswith("偏空") and (pd - pu) >= edge:
-        return True
-    return False
+    if sig.startswith("偏多") and (pu - pd) < need_edge:
+        return False
+    if sig.startswith("偏空") and (pd - pu) < need_edge:
+        return False
+    try:
+        cs = float(km.get("consistency_score") or 0.0)
+    except Exception:
+        cs = 0.0
+    abs_score = abs(cs)
+    score_floor = float(os.environ.get("LONGXIA_EXPERIMENT_MIN_SCORE_ABS", "0.70"))
+    s_chop = float(os.environ.get("LONGXIA_EXPERIMENT_SCORE_CHOP_FLOOR", "0.72"))
+    s_mid = float(os.environ.get("LONGXIA_EXPERIMENT_SCORE_MID_FLOOR", "0.71"))
+    if regime == "chop":
+        score_floor = max(score_floor, s_chop)
+    elif regime == "mid":
+        score_floor = max(score_floor, s_mid)
+    if abs_score < score_floor:
+        return False
+    if not km.get("experiment_kronos_gate_ok"):
+        return False
+    if not km.get("experiment_kronos_pattern_ok"):
+        return False
+    if not km.get("experiment_kronos_mtf_ok"):
+        return False
+    if not km.get("experiment_atr_vol_ok"):
+        return False
+    return True
 
 
 def _experiment_entry_filter(km: Dict[str, Any]) -> bool:
@@ -661,11 +699,18 @@ def _experiment_entry_filter(km: Dict[str, Any]) -> bool:
 def sync_experiment_track_from_snapshot(
     symbol: str, px: float, km: Dict[str, Any]
 ) -> None:
-    """规则实验轨：与主观察池共用快照；先 tick 再按筛选开仓（非 virtual_signal）。"""
+    """规则实验轨：与主观察池共用快照；先 tick（平仓+风控登记）再按筛选开仓（非 virtual_signal）。"""
     if not _experiment_track_enabled():
         return
     try:
         from evolution_core import ai_evo
+        from utils.experiment_risk_state import (
+            day_loss_exceeded,
+            direction_blocked_by_single_side,
+            direction_in_cooldown,
+            is_paused,
+            register_close,
+        )
     except Exception:
         return
     try:
@@ -677,6 +722,21 @@ def sync_experiment_track_from_snapshot(
     sym = str(symbol or "").strip()
     if not sym:
         return
+    pause_sec = float(os.environ.get("LONGXIA_EXPERIMENT_PAUSE_SEC", "900"))
+    close_ret = ai_evo.tick(pxf, sym)
+    if close_ret:
+        profit_pct, dir_closed = close_ret
+        register_close(
+            _REPO_ROOT,
+            profit_pct,
+            direction=str(dir_closed),
+            pause_sec=pause_sec,
+            max_consecutive_before_pause=2,
+        )
+    if is_paused(_REPO_ROOT):
+        return
+    if day_loss_exceeded(_REPO_ROOT):
+        return
     if not _experiment_entry_filter(km):
         return
     sig = str(km.get("signal_label") or "")
@@ -685,6 +745,10 @@ def sync_experiment_track_from_snapshot(
     elif sig.startswith("偏空"):
         direction = "做空"
     else:
+        return
+    if direction_blocked_by_single_side(direction):
+        return
+    if direction_in_cooldown(_REPO_ROOT, direction):
         return
     try:
         entry = float(km.get("entry_price") or pxf)
@@ -695,7 +759,6 @@ def sync_experiment_track_from_snapshot(
     if mode == "legacy":
         if not _price_levels_self_check(entry, direction, sl, tp1, tp2, tp3):
             return
-    ai_evo.tick(pxf, sym)
     for t in ai_evo.memory.open_trades:
         if str(t.get("symbol") or "").strip() == sym:
             return
@@ -934,6 +997,21 @@ def get_v313_decision_snapshot(
         brain_meta = snapshot_brain_meta()
     except Exception:
         pass
+    experiment_atr_pct = atr_percent_proxy(klines) if klines else 0.0
+    atr_chop_max = float(os.environ.get("LONGXIA_EXPERIMENT_ATR_CHOP_MAX", "0.12"))
+    atr_trend_min = float(os.environ.get("LONGXIA_EXPERIMENT_ATR_TREND_MIN", "0.22"))
+    experiment_kronos_regime = markov_regime(
+        t5, experiment_atr_pct, atr_chop_max=atr_chop_max, atr_trend_min=atr_trend_min
+    )
+    experiment_kronos_mtf_ok = mtf_aligned(closes, sig_label)
+    wick_ratio = float(os.environ.get("LONGXIA_EXPERIMENT_WICK_BODY_RATIO", "0.6"))
+    experiment_kronos_pattern_ok = has_engulfing_or_key_pattern(
+        klines
+    ) or last_bar_wick_dominant(klines, wick_body_ratio=wick_ratio)
+    gate_dev = float(os.environ.get("LONGXIA_EXPERIMENT_GATE_RSI_DEV", "12"))
+    experiment_kronos_gate_ok = gate_deviation_ok(rsi_1m, sig_label, min_dev=gate_dev)
+    atr_min_pct = float(os.environ.get("LONGXIA_EXPERIMENT_ATR_MIN_PCT", "0.08"))
+    experiment_atr_vol_ok = experiment_atr_pct >= atr_min_pct
     return {
         "symbol": symbol,
         "prediction_cycle": "下一根 5 分钟 K线",
@@ -976,6 +1054,12 @@ def get_v313_decision_snapshot(
         "futures_ticker_price_str": futures_price,
         "ticker_display_lines": ticker_lines_text,
         "theory_book_hints_text": theory_book_hints_text,
+        "experiment_atr_pct": experiment_atr_pct,
+        "experiment_kronos_regime": experiment_kronos_regime,
+        "experiment_kronos_mtf_ok": experiment_kronos_mtf_ok,
+        "experiment_kronos_pattern_ok": experiment_kronos_pattern_ok,
+        "experiment_kronos_gate_ok": experiment_kronos_gate_ok,
+        "experiment_atr_vol_ok": experiment_atr_vol_ok,
         **brain_meta,
     }
 def sync_virtual_memos_from_state(symbol: str, entry_price: float) -> None:

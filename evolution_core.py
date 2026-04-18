@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 _BJ = ZoneInfo("Asia/Shanghai")
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from utils.trade_exit_rules import first_exit_tick
 
@@ -81,8 +81,10 @@ class TradeMemory:
             "entry_time": time.time(),
         })
 
-    def check_close_trade(self, current_price, symbol: Optional[str] = None):
-        """symbol 为 None 时仅撮合「无 symbol」的遗留单；否则只撮合该币种。"""
+    def check_close_trade(
+        self, current_price, symbol: Optional[str] = None
+    ) -> Optional[Tuple[float, str]]:
+        """symbol 为 None 时仅撮合「无 symbol」的遗留单；否则只撮合该币种。返回 (盈亏%, 方向)。"""
         profit = None
         idx = None
         filt = None if symbol is None else str(symbol).strip()
@@ -109,8 +111,9 @@ class TradeMemory:
                 break
         if idx is not None and profit is not None:
             trade = self.open_trades.pop(idx)
+            direction = str(trade.get("direction") or "做多")
             self.save_record(trade, profit, current_price)
-            return profit
+            return (profit, direction)
         return None
 
     def save_record(self, trade, profit, close_price):
@@ -252,8 +255,8 @@ class AIAutoEvolution:
     ):
         self.memory.add_open_trade(direction, entry, sl, tp1, tp2, tp3, symbol=symbol)
 
-    def tick(self, price, symbol: Optional[str] = None):
-        self.memory.check_close_trade(price, symbol)
+    def tick(self, price, symbol: Optional[str] = None) -> Optional[Tuple[float, str]]:
+        return self.memory.check_close_trade(price, symbol)
 
     def report(self):
         return self.analyzer.get_report()
