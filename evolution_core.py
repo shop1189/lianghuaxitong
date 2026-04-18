@@ -1,5 +1,6 @@
 # evolution_core.py - 全自动进化 + 网页实时报表
 import json
+import os
 import time
 from pathlib import Path
 from datetime import datetime, timezone
@@ -8,11 +9,59 @@ from zoneinfo import ZoneInfo
 _BJ = ZoneInfo("Asia/Shanghai")
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils.trade_exit_rules import first_exit_tick
+from utils.trade_exit_rules import first_exit_tick, first_exit_tick_post_tp1
 
 # 与 live_trading 等处一致：始终绑定本文件所在目录下的 trade_memory.json，避免受进程 CWD 影响读到错误/陈旧数据
 _REPO_DIR = Path(__file__).resolve().parent
 _DEFAULT_TRADE_MEMORY = _REPO_DIR / "trade_memory.json"
+
+
+def _experiment_tp1_partial_applies(t: Dict[str, Any]) -> bool:
+    """仅带 symbol 的实验轨开仓启用 TP1 部分锁定（legacy 无 symbol 单保持原单次平仓）。"""
+    if os.environ.get("LONGXIA_EXPERIMENT_TP1_PARTIAL", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    return bool(str(t.get("symbol") or "").strip())
+
+
+def _arm_tp1_partial(t: Dict[str, Any], hit: Tuple[Any, ...]) -> None:
+    """命中 TP1：锁定部分盈亏（名义），止损抬到保本±缓冲；仓位仍一笔 open_trades，后续用 post_tp1 规则平仓。"""
+    pr = float(os.environ.get("LONGXIA_EXPERIMENT_PARTIAL_RATIO", "0.5"))
+    pr = max(0.05, min(pr, 0.95))
+    be_buf = float(os.environ.get("LONGXIA_EXPERIMENT_BE_BUFFER_PCT", "0.0002"))
+    entry = float(t["entry"])
+    d = str(t.get("direction") or "")
+    if d == "模拟入场":
+        d = "做多"
+    if d == "做多":
+        t["sl"] = entry * (1.0 + be_buf)
+    elif d == "做空":
+        t["sl"] = entry * (1.0 - be_buf)
+    t["experiment_tp1_done"] = True
+    t["experiment_partial_ratio"] = round(pr, 4)
+    t["experiment_locked_pct"] = round(float(hit[1]) * pr, 4)
+
+
+def _blended_profit_pct(t: Dict[str, Any], hit: Tuple[Any, ...]) -> float:
+    """剩余仓位按全仓口径的 hit[1]，与已锁定部分加权合成最终盈亏%（记一笔平仓）。"""
+    pr = float(t.get("experiment_partial_ratio") or 0.5)
+    locked = float(t.get("experiment_locked_pct") or 0.0)
+    p_full = float(hit[1])
+    return round(locked + (1.0 - pr) * p_full, 2)
+
+
+def _close_reason_for_hit(trade: Dict[str, Any], bracket: str) -> str:
+    b = str(bracket or "").strip()
+    if not b:
+        return "—"
+    if trade.get("experiment_tp1_done") and b == "sl":
+        return "BE"
+    return {"sl": "SL", "tp1": "TP1", "tp2": "TP2", "tp3": "TP3"}.get(b, b.upper())
+
 
 class EvolutionConfig:
     SL_MIN = 0.2
@@ -106,6 +155,7 @@ class TradeMemory:
         """symbol 为 None 时仅撮合「无 symbol」的遗留单；否则只撮合该币种。返回 (盈亏%, 方向)。"""
         profit = None
         idx = None
+        hit_bracket: Optional[str] = None
         filt = None if symbol is None else str(symbol).strip()
         for i, t in enumerate(self.open_trades):
             ts = str(t.get("symbol") or "").strip()
@@ -115,6 +165,22 @@ class TradeMemory:
             elif ts != filt:
                 continue
             d = t["direction"]
+            p = float(current_price)
+            if t.get("experiment_tp1_done"):
+                hit = first_exit_tick_post_tp1(
+                    d,
+                    float(t["entry"]),
+                    float(t["sl"]),
+                    float(t["tp2"]),
+                    float(t["tp3"]),
+                    p,
+                )
+                if hit is None:
+                    continue
+                profit = _blended_profit_pct(t, hit)
+                hit_bracket = str(hit[0])
+                idx = i
+                break
             hit = first_exit_tick(
                 d,
                 float(t["entry"]),
@@ -122,25 +188,33 @@ class TradeMemory:
                 float(t["tp1"]),
                 float(t["tp2"]),
                 float(t["tp3"]),
-                float(current_price),
+                p,
             )
             if hit is not None:
-                profit = hit[1]
+                if (
+                    str(hit[0]) == "tp1"
+                    and _experiment_tp1_partial_applies(t)
+                ):
+                    _arm_tp1_partial(t, hit)
+                    return None
+                profit = float(hit[1])
+                hit_bracket = str(hit[0])
                 idx = i
                 break
         if idx is not None and profit is not None:
             trade = self.open_trades.pop(idx)
             direction = str(trade.get("direction") or "做多")
-            self.save_record(trade, profit, current_price)
+            self.save_record(trade, profit, current_price, hit_bracket=hit_bracket)
             return (profit, direction)
         return None
 
-    def save_record(self, trade, profit, close_price):
+    def save_record(self, trade, profit, close_price, hit_bracket: Optional[str] = None):
         today = datetime.now(_BJ).strftime("%Y-%m-%d")
         entry_u = datetime.fromtimestamp(trade["entry_time"], tz=timezone.utc)
         close_u = datetime.now(timezone.utc)
         sym = str(trade.get("symbol") or "").strip()
         rp = 6 if sym else 2
+        cr = _close_reason_for_hit(trade, str(hit_bracket or ""))
         record = {
             "date": today,
             "entry_time": entry_u.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -153,7 +227,12 @@ class TradeMemory:
             "tp3": round(trade["tp3"], rp),
             "close": round(close_price, rp),
             "profit": round(profit, 2),
+            "close_reason": cr,
         }
+        if trade.get("experiment_tp1_done"):
+            record["tp1_hit"] = True
+            record["partial_ratio"] = trade.get("experiment_partial_ratio")
+            record["partial_locked_pct"] = trade.get("experiment_locked_pct")
         if sym:
             record["symbol"] = sym
         for k in (

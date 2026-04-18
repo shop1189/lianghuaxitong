@@ -165,7 +165,7 @@ def _rr_gross_net_str(r: dict) -> str:
 def _normalize_bracket_cr(raw: object) -> str:
     """落库 close_reason 大小写不一（sl / SL）时统一为 TP1…/SL。"""
     s = str(raw or "").strip().upper()
-    if s in ("SL", "TP1", "TP2", "TP3"):
+    if s in ("SL", "TP1", "TP2", "TP3", "BE"):
         return s
     return ""
 
@@ -268,6 +268,8 @@ def _result_cn(r: dict) -> str:
     cr = _resolved_close_bracket(r)
     if cr in ("TP1", "TP2", "TP3"):
         return f"止盈·{cr}"
+    if cr == "BE":
+        return "保本·BE"
     if cr == "SL":
         return "止损·SL"
     return "—"
@@ -1448,6 +1450,12 @@ def page_pullback_watch(symbol: str = Query("SOL/USDT")):
         ("回调防护 deep", km.get("main_pullback_deep")),
         ("回调防护 direction", km.get("main_pullback_direction")),
         ("回调防护 reason", km.get("main_pullback_reason")),
+        ("机械触发 mode", km.get("main_breakout_mode")),
+        ("机械触发 direction", km.get("main_breakout_direction")),
+        ("机械触发 reason", km.get("main_breakout_reason")),
+        ("机械触发 区间高 / 低", f"{km.get('main_breakout_range_high')} / {km.get('main_breakout_range_low')}"),
+        ("机械触发 上/下突破线", f"{km.get('main_breakout_up_threshold')} / {km.get('main_breakout_down_threshold')}"),
+        ("机械触发 判定价 / 来源", f"{km.get('main_breakout_eval_price')} / {km.get('main_breakout_price_basis')}"),
         ("EMA 追价拦截", km.get("main_ema_chase_block")),
         ("EMA 追价说明", km.get("main_ema_chase_reason")),
         ("BTC 锚定 active", km.get("main_btc_anchor_active")),
@@ -1814,6 +1822,8 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <tr><td>趋势状态</td><td>{html.escape(_zh_decision_copy(km.get("trend_status")))}</td></tr>
 <tr><td>行情状态（Markov）</td><td>{html.escape(_zh_decision_copy(km.get("markov_regime_line") or "—"))}</td></tr>
 <tr><td>主观察池·回调防护</td><td>active={html.escape(str(km.get("main_pullback_active", "—")))} · deep={html.escape(str(km.get("main_pullback_deep", "—")))} · dir={html.escape(str(km.get("main_pullback_direction", "—")))} · {html.escape(_zh_decision_copy(km.get("main_pullback_reason") or "—"))}</td></tr>
+<tr><td>主观察池·机械触发（观察）</td><td>mode={html.escape(str(km.get("main_breakout_mode", "—")))} · dir={html.escape(str(km.get("main_breakout_direction", "—")))} · {html.escape(_zh_decision_copy(km.get("main_breakout_reason") or "—"))}</td></tr>
+<tr><td>主观察池·机械触发·区间/突破线</td><td>区间高 {html.escape(str(km.get("main_breakout_range_high", "—")))} · 区间低 {html.escape(str(km.get("main_breakout_range_low", "—")))} · 上突破线 {html.escape(str(km.get("main_breakout_up_threshold", "—")))} · 下突破线 {html.escape(str(km.get("main_breakout_down_threshold", "—")))} · 判定价 {html.escape(str(km.get("main_breakout_eval_price", "—")))}（{html.escape(str(km.get("main_breakout_price_basis", "—")))}）（<span class="muted">回看 <code>LONGXIA_MAIN_BREAKOUT_*</code> · <code>LONGXIA_MAIN_BREAKOUT_SIGNAL_FILTER</code>，仅快照、不触发下单</span>）</td></tr>
 <tr><td>主观察池·BTC 锚定 / EMA 追价</td><td>BTC锚={html.escape(str(km.get("main_btc_anchor_active", "—")))} 禁多={html.escape(str(km.get("main_btc_risk_off_long", "—")))} 禁空={html.escape(str(km.get("main_btc_risk_off_short", "—")))} · EMA追价拦截={html.escape(str(km.get("main_ema_chase_block", "—")))} · {html.escape(_zh_decision_copy(km.get("main_btc_anchor_reason") or km.get("main_ema_chase_reason") or "—"))}</td></tr>
 <tr><td>信号标签（防护前）</td><td>{html.escape(str(km.get("signal_label_before_main_guard") or "—"))}</td></tr>
 <tr><td>当前策略模板（Markov）</td><td>{html.escape(_zh_decision_copy(km.get("experiment_markov_template_line") or "—"))}</td></tr>

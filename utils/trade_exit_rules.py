@@ -3,6 +3,7 @@
 平仓档位判定与盈亏 %（与 `evolution_core.TradeMemory.check_close_trade` 公式对齐）。
 
 - **判定顺序**：**SL → TP3 → TP2 → TP1**（先命中先平）。
+- **实验轨 TP1 部分止盈后**：同顺序但不含 TP1，见 ``first_exit_tick_post_tp1``（SL 已抬至保本附近）。
 - **tick 模式**：仅使用当前价 `price`（实验轨 `ai_evo.tick`、虚拟单同步里传入的 last）。
 - 盈亏百分比与 `check_close_trade` / `save_record` 使用的口径一致；**成交价**在 `evolution_core` 里仍记 **当时传入的 current_price**（非强行改写成理论 TP 价）。
 """
@@ -75,6 +76,40 @@ def first_exit_tick(
             return ("tp2", round((e - b) / e * 100, 2), b)
         if p <= a:
             return ("tp1", round((e - a) / e * 100, 2), a)
+    return None
+
+
+def first_exit_tick_post_tp1(
+    direction: str,
+    entry: float,
+    sl: float,
+    tp2: float,
+    tp3: float,
+    price: float,
+) -> Optional[Tuple[Bracket, float, float]]:
+    """
+    TP1 已部分止盈并抬损至保本后：仅判断 SL(实为保本附近) / TP3 / TP2，顺序与 ``first_exit_tick`` 一致（先 SL，再 TP3→TP2）。
+    不含 TP1。
+    """
+    d = str(direction or "")
+    if d == "模拟入场":
+        d = "做多"
+    e, s, b, c = float(entry), float(sl), float(tp2), float(tp3)
+    p = float(price)
+    if d == "做多":
+        if p <= s:
+            return ("sl", round((s / e - 1) * 100, 2), s)
+        if p >= c:
+            return ("tp3", round((c / e - 1) * 100, 2), c)
+        if p >= b:
+            return ("tp2", round((b / e - 1) * 100, 2), b)
+    elif d == "做空":
+        if p >= s:
+            return ("sl", round((e - s) / e * 100, 2), s)
+        if p <= c:
+            return ("tp3", round((e - c) / e * 100, 2), c)
+        if p <= b:
+            return ("tp2", round((e - b) / e * 100, 2), b)
     return None
 
 

@@ -21,3 +21,13 @@ def scaled_exit_enabled() -> bool:
         "yes",
         "on",
     )
+
+
+def main_virtual_tp1_partial_enabled() -> bool:
+    """主观察池虚拟单：TP1 部分锁定 + 保本抬损（默认开，与分批止盈二选一写仓）。"""
+    return os.environ.get("LONGXIA_MAIN_VIRTUAL_TP1_PARTIAL", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
