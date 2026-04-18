@@ -27,6 +27,7 @@ import ccxt
 import numpy as np
 import pandas as pd
 from beijing_time import trade_memory_record_for_preview, utc_ms_to_bj_str
+from utils.trade_exit_rules import virtual_hit_profit_and_close_px
 from data_fetcher import _fetch_current_ticker_price_sync
 from data_fetcher import fetch_ohlcv as gate_fetch_ohlcv
 from data.fetcher import build_indicator_snapshot
@@ -118,29 +119,10 @@ def _virtual_hit_and_close(
     tp2: float,
     tp3: float,
 ) -> Optional[Tuple[float, float]]:
-    """与 evolution_core.TradeMemory.check_close_trade 同一判定顺序（SL 优先于 TP）。"""
-    d = direction
-    if d == "模拟入场":
-        d = "做多"
-    if d == "做多":
-        if price <= sl:
-            return round((sl / entry - 1) * 100, 2), round(sl, 6)
-        if price >= tp3:
-            return round((tp3 / entry - 1) * 100, 2), round(tp3, 6)
-        if price >= tp2:
-            return round((tp2 / entry - 1) * 100, 2), round(tp2, 6)
-        if price >= tp1:
-            return round((tp1 / entry - 1) * 100, 2), round(tp1, 6)
-    elif d == "做空":
-        if price >= sl:
-            return round((entry / sl - 1) * -100, 2), round(sl, 6)
-        if price <= tp3:
-            return round((entry / tp3 - 1) * -100, 2), round(tp3, 6)
-        if price <= tp2:
-            return round((entry / tp2 - 1) * -100, 2), round(tp2, 6)
-        if price <= tp1:
-            return round((entry / tp1 - 1) * -100, 2), round(tp1, 6)
-    return None
+    """判定顺序同 ``utils.trade_exit_rules.first_exit_tick``（SL→TP3→TP2→TP1）；盈亏口径与 evolution_core 一致。"""
+    return virtual_hit_profit_and_close_px(
+        direction, price, entry, sl, tp1, tp2, tp3
+    )
 def _sync_virtual_closeouts_for_price(price: float) -> None:
     if price <= 0:
         return

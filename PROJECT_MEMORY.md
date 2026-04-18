@@ -4,11 +4,16 @@
 
 记录与人协作时的**长期约定**与备忘；**一层入口**请先读仓库根目录 **[README.md](README.md)**（渐进式披露：短索引 → 再点链）。
 
+**本地与服务器合并升级框架（权威对照稿）**：[`docs/upgrade_framework_merged_v1.md`](docs/upgrade_framework_merged_v1.md)（阶段0～4 与 `UPGRADE_PLAN` / `upgrade_roadmap_v1` 映射、下一轮 A/B/C 选项）。
+
 若你方在 Hermes 同步目录（如 `/opt/hermes-sync/inbox/`）另有同名 `PROJECT_MEMORY.md`，以**各自场景**为准：本文件服务 **longxia_system 仓库内开发**；同步目录文件服务 **日报 / 健康检查 / 跨机事实**。
 
 ## 2) 相关链接
 
+- **合并升级框架（v1）**：`docs/upgrade_framework_merged_v1.md`
 - 升级与排期：`docs/UPGRADE_PLAN.md`
+- 长路线图占位：`docs/upgrade_roadmap_v1.md`
+- 日更笔记（可选契约）：`docs/daily_market_notes.md`
 - 实验轨环境变量速查：`live_trading.py` 顶部注释
 - HFT 技能库共识（v1）：`docs/quant_hft_skill_consensus_v1.md`
 - 对外引擎版本（监控）：`GET /api/version` → `{"engine":"V3.17.0",...}`
@@ -24,6 +29,10 @@
 - **备份标签**：`restore-pre-phase-b-2026-04-18` → 提交 **`0dfb385`**（进入阶段 B 文档前的快照）  
 - **离线包**：`/root/longxia_backups/longxia_system-restore-pre-phase-b-2026-04-18.tar.gz`  
 - **阶段 B 文档增量**：**`ff616e3`**～**`b849a3b`**（`docs/agent/`、`AGENTS.md`、README 互链与留档；Hermes 健康报告版式仍待真人团队）
+
+## 3.2) 工程切片（2026-04-18 · 路线图阶段 A 起步）
+
+- **同源平仓判定**：`utils/trade_exit_rules.py`（`first_exit_tick`）；`evolution_core.TradeMemory.check_close_trade` 与 `live_trading._virtual_hit_and_close` 统一调用。虚拟单 **做空** 盈亏 % 与原先手写分支若不一致，以 **evolution_core 公式** 为准（属同源对齐）。详见 **`docs/upgrade_framework_merged_v1.md` §7**。
 
 ## 4) Hermes 技能包 · 自动入脑（可选 cron）
 

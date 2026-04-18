@@ -15,6 +15,7 @@
 |--------|------|
 | **Cursor / Agent 短约束** | [`AGENTS.md`](AGENTS.md) → [`docs/agent/README.md`](docs/agent/README.md) |
 | 整库升级路线与分阶段事项 | `docs/UPGRADE_PLAN.md` |
+| **合并升级框架（本地↔服务器对齐）** | [`docs/upgrade_framework_merged_v1.md`](docs/upgrade_framework_merged_v1.md) |
 | 项目记忆 / 协作约定（若存在） | `PROJECT_MEMORY.md` |
 | Hermes 与量化协同边界 | `docs/hermes_synergy_framework.md` |
 | 决策页、虚拟单、**规则实验轨**环境变量 | `live_trading.py` 文件顶部注释 |

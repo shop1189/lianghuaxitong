@@ -5,6 +5,7 @@
 | 文档 | 用途 |
 |------|------|
 | 根目录 [`AGENTS.md`](../../AGENTS.md) | 给 Cursor/自动化代理的短约束（先读） |
+| [`../upgrade_framework_merged_v1.md`](../upgrade_framework_merged_v1.md) | 合并升级框架（阶段0～4 ↔ 仓库路线图、下一轮 A/B/C） |
 | [`../UPGRADE_PLAN.md`](../UPGRADE_PLAN.md) | 分阶段升级计划 |
 | [`../../PROJECT_MEMORY.md`](../../PROJECT_MEMORY.md) | 协作约定与割接留档 |
 | [`../../.cursor/rules/`](../../.cursor/rules/) | 工作区规则（如聊天需求对照） |

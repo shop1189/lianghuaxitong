@@ -35,6 +35,13 @@
 
 ---
 
+## 路线图长文
+
+- 合并表与选项 A/B/C：[`upgrade_framework_merged_v1.md`](upgrade_framework_merged_v1.md)  
+- 长路线图占位：[`upgrade_roadmap_v1.md`](upgrade_roadmap_v1.md)  
+
+---
+
 ## 阶段 D — 产品与运维体验
 
 - [ ] 报表 / Web：首页只保留状态灯 + 一条建议动作，详情再下钻（与 Hermes 健康报告同一套路）  

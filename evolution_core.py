@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo
 _BJ = ZoneInfo("Asia/Shanghai")
 from typing import Any, Dict, List, Optional
 
+from utils.trade_exit_rules import first_exit_tick
+
 # 与 live_trading 等处一致：始终绑定本文件所在目录下的 trade_memory.json，避免受进程 CWD 影响读到错误/陈旧数据
 _REPO_DIR = Path(__file__).resolve().parent
 _DEFAULT_TRADE_MEMORY = _REPO_DIR / "trade_memory.json"
@@ -91,33 +93,20 @@ class TradeMemory:
                     continue
             elif ts != filt:
                 continue
-            d, entry, sl, tp1, tp2, tp3 = t["direction"], t["entry"], t["sl"], t["tp1"], t["tp2"], t["tp3"]
-            if d == "做多":
-                if current_price <= sl:
-                    profit = round((sl / entry - 1) * 100, 2)
-                    idx = i
-                elif current_price >= tp3:
-                    profit = round((tp3 / entry - 1) * 100, 2)
-                    idx = i
-                elif current_price >= tp2:
-                    profit = round((tp2 / entry - 1) * 100, 2)
-                    idx = i
-                elif current_price >= tp1:
-                    profit = round((tp1 / entry - 1) * 100, 2)
-                    idx = i
-            elif d == "做空":
-                if current_price >= sl:
-                    profit = round((entry - sl) / entry * 100, 2)
-                    idx = i
-                elif current_price <= tp3:
-                    profit = round((entry - tp3) / entry * 100, 2)
-                    idx = i
-                elif current_price <= tp2:
-                    profit = round((entry - tp2) / entry * 100, 2)
-                    idx = i
-                elif current_price <= tp1:
-                    profit = round((entry - tp1) / entry * 100, 2)
-                    idx = i
+            d = t["direction"]
+            hit = first_exit_tick(
+                d,
+                float(t["entry"]),
+                float(t["sl"]),
+                float(t["tp1"]),
+                float(t["tp2"]),
+                float(t["tp3"]),
+                float(current_price),
+            )
+            if hit is not None:
+                profit = hit[1]
+                idx = i
+                break
         if idx is not None and profit is not None:
             trade = self.open_trades.pop(idx)
             self.save_record(trade, profit, current_price)
