@@ -18,6 +18,7 @@
 | **合并升级框架（本地↔服务器对齐）** | [`docs/upgrade_framework_merged_v1.md`](docs/upgrade_framework_merged_v1.md) |
 | 项目记忆 / 协作约定（若存在） | `PROJECT_MEMORY.md` |
 | Hermes 与量化协同边界 | `docs/hermes_synergy_framework.md` |
+| **Hermes 配合清单（升级后转对方）** | [`docs/HERMES_TEAM_HANDOFF.md`](docs/HERMES_TEAM_HANDOFF.md) |
 | 决策页、虚拟单、**规则实验轨**环境变量 | `live_trading.py` 文件顶部注释 |
 | Hermes HFT 技能库自动入脑（cron） | `scripts/hft_skill_auto_ingest.py`、`docs/quant_hft_skill_consensus_v1.md` |
 | 阶段 1 健康快检 | `scripts/phase1_health_check.py` |

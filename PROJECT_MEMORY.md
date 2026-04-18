@@ -16,6 +16,7 @@
 - 日更笔记（可选契约）：`docs/daily_market_notes.md`
 - 实验轨环境变量速查：`live_trading.py` 顶部注释
 - HFT 技能库共识（v1）：`docs/quant_hft_skill_consensus_v1.md`
+- **Hermes 配合清单（转对方执行）**：`docs/HERMES_TEAM_HANDOFF.md`
 - 对外引擎版本（监控）：`GET /api/version` → `{"engine":"V3.17.0",...}`
 
 ## 3) 发布割接留档（V3.17.0 · 2026-04-18）
