@@ -356,7 +356,7 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
 
     sec2 = f"""
 <table class="metrics" style="margin-top:12px">
-<tr><td colspan="2"><strong>二、主观意图（主观察池）</strong>（virtual_signal 为真：与决策页信号对齐，大版本外以微调为主，统计独立）</td></tr>
+<tr><td colspan="2"><strong>二、主观察池</strong>（<code>virtual_signal</code> 为真：与决策页信号对齐，大版本外以微调为主，统计独立）</td></tr>
 <tr><td>总交易（累计已平仓笔数）</td><td>{len(vir_closed)}</td></tr>
 <tr><td>总赢 / 总亏</td><td>{len([r for r in vir_closed if float(r.get('profit') or 0) > 0])} / {len([r for r in vir_closed if float(r.get('profit') or 0) <= 0])}</td></tr>
 <tr><td>总胜率（毛）</td><td>{v_gross_wr}</td></tr>
@@ -461,8 +461,9 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
 
     foot = """
 <p class="muted" style="margin-top:14px;font-size:0.86rem;line-height:1.55">
-说明：以下为本地 <code>trade_memory.json</code> 中的 memos 模拟记录，不等同于真实成交回报；
+说明：以下为本地 <code>trade_memory.json</code> 中的 memos 记录（两轨均为模拟记账，非交易所成交回报）。
 手续费按展示口径双边合计 0.16% 估算净盈亏；统计以记录内 <code>date</code>（北京日历日）为准。
+「规则实验轨」若长期笔数很少或为空，通常因当前服务主路径未接入该轨写入链路，属设计分叉而非页面故障；详见仓库 <code>docs/trade_memory_two_tracks.md</code>。
 </p>
 """
     return sec1 + sec2 + tbl_main + tbl_exp + foot
