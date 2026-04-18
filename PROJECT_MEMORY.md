@@ -11,8 +11,15 @@
 - 升级与排期：`docs/UPGRADE_PLAN.md`
 - 实验轨环境变量速查：`live_trading.py` 顶部注释
 - HFT 技能库共识（v1）：`docs/quant_hft_skill_consensus_v1.md`
+- 对外引擎版本（监控）：`GET /api/version` → `{"engine":"V3.17.0",...}`
 
-## 12) Hermes 技能包 · 自动入脑（可选 cron）
+## 3) 发布割接留档（V3.17.0 · 2026-04-18）
+
+- **性质**：版本号与对外文案统一（数据层 **V3.17.0**）、`data_fetcher` 启动日志、`GET /api/version`；**未**改动主观察池虚拟单、实验轨开平仓规则内核。
+- **100% 复原（打补丁前一刻）**：Git 标签 **`restore-pre-v317-patch-2026-04-18`**（提交 `a033433` 及父链）；可选离线包：`/root/longxia_backups/longxia_system-restore-pre-v317-2026-04-18.tar.gz`（`git archive`）。
+- **回滚命令**：`git reset --hard restore-pre-v317-patch-2026-04-18`（需在同一仓库内且已 fetch 标签）。
+
+## 4) Hermes 技能包 · 自动入脑（可选 cron）
 
 | 目的 | 路径 |
 |------|------|

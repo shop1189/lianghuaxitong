@@ -1,4 +1,7 @@
-"""数据获取模块：恐惧贪婪等仍走 data_feed；K 线快照走 Gate CCXT 现货（按 symbol）。"""
+"""数据获取模块（数据层 V3.17.0）：恐惧贪婪等仍走 data_feed；K 线快照走 Gate CCXT 现货（按 symbol）。
+
+内部 source 字段仍为 gateio_ccxt_v316，仅作兼容标识，与对外 V3.17.0 展示名可同时存在。
+"""
 import time
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone, timedelta

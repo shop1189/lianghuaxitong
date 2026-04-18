@@ -17,8 +17,13 @@ def _gate_ex() -> Any:
     return _gate
 
 
+def log_v317_engine_ready() -> None:
+    print("[v317] proxy data_fetcher ready (data layer V3.17.0)")
+
+
 def log_v316_engine_ready() -> None:
-    print("[v316] proxy data_fetcher ready")
+    """兼容旧名：与 log_v317_engine_ready 相同。"""
+    log_v317_engine_ready()
 
 
 async def fetch_current_ticker_price(symbol: str = "SOL/USDT") -> float:

@@ -1,5 +1,6 @@
 """
-Web / 服务入口：V3.16.5 全中文仪表盘 · /decision（V3.14 规则信号块第一版样式 + memos + 北京时间）。
+Web / 服务入口：V3.17.0 全中文仪表盘 · /decision（V3.14 规则信号块第一版样式 + memos + 北京时间）。
+对外引擎版本见 ENGINE_VERSION 与 GET /api/version。
 """
 from __future__ import annotations
 
@@ -12,12 +13,15 @@ from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from data_fetcher import fetch_current_ticker_price, fetch_ticker, log_v316_engine_ready
+from data_fetcher import fetch_current_ticker_price, fetch_ticker, log_v317_engine_ready
 
-log_v316_engine_ready()
+log_v317_engine_ready()
+
+# 与 Hermes / 监控对齐的对外版本号（仅标识，不改变交易逻辑）
+ENGINE_VERSION = "V3.17.0"
 
 from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 import uvicorn
 
 from data.fetcher import build_indicator_snapshot
@@ -488,7 +492,7 @@ def _meta_source_zh(raw: object) -> str:
     """数据源展示名（与底层字段对应，仅用于页面中文）。"""
     s = str(raw or "").strip()
     if s == "gateio_ccxt_v316":
-        return "Gate.io · CCXT（V3.16）"
+        return "Gate.io · CCXT（数据层 V3.17.0）"
     return s
 
 
@@ -783,6 +787,14 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="longxia_system", lifespan=lifespan)
 
 
+@app.get("/api/version")
+def api_engine_version():
+    """对外版本锚点（监控 curl 用）；与页面「数据层」文案一致。"""
+    return JSONResponse(
+        {"engine": ENGINE_VERSION, "app": "longxia_system", "data_layer": ENGINE_VERSION}
+    )
+
+
 @app.get("/")
 def root():
     """浏览器访问站点根路径时直接进入决策看板（与 /dashboard 行为一致）。"""
@@ -1057,7 +1069,7 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 
 {_memos_reflect_bar_html()}
 
-<h1>多币种指标看板<span class="v316-tag">· Gate.io CCXT（数据层 V3.16）</span></h1>
+<h1>多币种指标看板<span class="v316-tag">· Gate.io CCXT（数据层 V3.17.0）</span></h1>
 <p class="subline">当前交易对：<b>{html.escape(sym)}</b>
 &nbsp;·&nbsp; 数据源 <code>{html.escape(_meta_source_zh(meta.get("source")))}</code>
 &nbsp;·&nbsp; 1 分钟 K 线根数 <b>{html.escape(str(meta.get("count", "")))}</b></p>
