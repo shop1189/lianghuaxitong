@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-04-18T21:50:01Z",
+  "generated_at_utc": "2026-04-19T03:40:02Z",
   "availability_verdict": "可用于策略判断",
   "next_action": "保持 rsync 与文件更新节奏，下一健康检查周期复查即可。",
   "overall_status": "green",
@@ -10,7 +10,7 @@
     "trade_memory_json": {
       "ok": true,
       "error": null,
-      "records": 4857,
+      "records": 5102,
       "last_record_time": "2026-04-19"
     },
     "backtest_result_csv": {
