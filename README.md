@@ -23,7 +23,7 @@
 | Hermes HFT 技能库自动入脑（cron） | `scripts/hft_skill_auto_ingest.py`、`docs/quant_hft_skill_consensus_v1.md` |
 | 阶段 1 健康快检 | `scripts/phase1_health_check.py` |
 | Web 入口 | `main.py`（`/decision` 决策看板） |
-| 对外版本（监控 / curl） | `GET /api/version` → JSON `engine` = **V3.17.0** |
+| 对外版本（监控 / curl） | `GET /api/version` → JSON `engine` = **V3.18.0** |
 
 ## 主干链路（一句话）
 

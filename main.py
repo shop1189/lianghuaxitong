@@ -1,5 +1,5 @@
 """
-Web / 服务入口：V3.17.0 全中文仪表盘 · /decision（V3.14 规则信号块第一版样式 + memos + 北京时间）。
+Web / 服务入口：V3.18.0 全中文仪表盘 · /decision（V3.14 规则信号块第一版样式 + memos + 北京时间）。
 对外引擎版本见 ENGINE_VERSION 与 GET /api/version。
 """
 from __future__ import annotations
@@ -40,7 +40,7 @@ from data_fetcher import fetch_current_ticker_price, fetch_ticker, log_v317_engi
 log_v317_engine_ready()
 
 # 与 Hermes / 监控对齐的对外版本号（仅标识，不改变交易逻辑）
-ENGINE_VERSION = "V3.17.0"
+ENGINE_VERSION = "V3.18.0"
 
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -56,6 +56,7 @@ from live_trading import (
     sync_virtual_memos_from_state,
 )
 from utils.exit_feature_flags import dynamic_levels_enabled, scaled_exit_enabled
+from utils.teacher_track_constants import SIGNAL_TRACK_BOOST, SIGNAL_TRACK_COMBAT
 
 SYMBOL_CHOICES = (
     "SOL/USDT",
@@ -69,6 +70,11 @@ SYMBOL_CHOICES = (
 MEMOS_BANNER = (
     "系统已开启全自动 memos 模拟记录与自我进化（开平仓与统计均由程序自动完成，您无需手动操作）"
 )
+
+# 部署自检：curl -s 'http://127.0.0.1:8080/copytrade' | grep longxia-ui
+# 若无输出，说明当前 HTTP 进程不是本仓库这份 main.py（未拉代码 / 工作目录不对 / 反代到旧实例）。
+_HTML_BUILD_MARKER = "<!-- longxia-ui:nav-teacher-v2 -->"
+_HTML_NO_CACHE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 
 
 def _pick_symbol(raw: str) -> str:
@@ -87,10 +93,13 @@ def _top_entry_strip(active: str, symbol: str = "SOL/USDT") -> str:
 
     return f"""<div class="top-entry-strip">
 {_a(f"/decision?symbol={qsym}", "决策看板", "decision")}
+{_a(f"/copytrade?symbol={qsym}", "跟单简版", "copytrade")}
 {_a(f"/pullback_watch?symbol={qsym}", "回调观察台", "pullback")}
 {_a("/daily_review", "每日复盘", "daily_review")}
 {_a("/memos_samples", "memos 原始样本", "memos")}
 {_a("/live_state", "实盘状态", "live")}
+{_a("/teacher_boost", "带单老师·起号", "teacher_boost")}
+{_a("/teacher_combat", "带单老师·实操", "teacher_combat")}
 </div>"""
 
 
@@ -760,18 +769,9 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
 
 
 def _memos_banner_html() -> str:
-    """第二次改版：紫色横幅内黄字 + 下划线链接（每日复盘 / 原始样本 / 实盘状态）。"""
+    """紫色横幅：系统说明 + 元信息；导航链接已移至顶栏 _top_entry_strip，避免重复。"""
     return f"""<div class="memos-banner">
 <strong>{html.escape(MEMOS_BANNER)}</strong>
-<p class="memos-banner-links">
-<a href="/pullback_watch">回调观察台（只读）</a>
-<span class="banner-dot">·</span>
-<a href="/daily_review">每日策略复盘（自动生成）</a>
-<span class="banner-dot">·</span>
-<a href="/memos_samples">memos 原始样本记录页（JSON，核销）</a>
-<span class="banner-dot">·</span>
-<a href="/live_state">实盘状态文件（live_trading_state.json，只读）</a>
-</p>
 <p class="memos-banner-meta muted">换日请至当日列表 · 约每 45 秒更新（随决策页加载刷新）</p>
 </div>"""
 
@@ -780,7 +780,7 @@ def _meta_source_zh(raw: object) -> str:
     """数据源展示名（与底层字段对应，仅用于页面中文）。"""
     s = str(raw or "").strip()
     if s == "gateio_ccxt_v316":
-        return "Gate.io · CCXT（数据层 V3.17.0）"
+        return f"Gate.io · CCXT（数据层 {ENGINE_VERSION}）"
     return s
 
 
@@ -1351,7 +1351,14 @@ app = FastAPI(title="longxia_system", lifespan=lifespan)
 def api_engine_version():
     """对外版本锚点（监控 curl 用）；与页面「数据层」文案一致。"""
     return JSONResponse(
-        {"engine": ENGINE_VERSION, "app": "longxia_system", "data_layer": ENGINE_VERSION}
+        {
+            "engine": ENGINE_VERSION,
+            "app": "longxia_system",
+            "data_layer": ENGINE_VERSION,
+            # 部署自检：旧进程无此字段或 ui_build 不同，即未加载含带单老师页的本版 main.py
+            "ui_build": "nav-teacher-v2",
+            "teacher_paths": ["/teacher_boost", "/tb", "/teacher_combat", "/tc"],
+        }
     )
 
 
@@ -1371,7 +1378,150 @@ def dashboard_redirect(symbol: str = Query("SOL/USDT")):
     )
 
 
+@app.get("/teacher_comba", include_in_schema=False)
+def redirect_teacher_comba_typo():
+    """常见拼写错误：comba → combat（不重定向会 404）。"""
+    return RedirectResponse(url="/teacher_combat", status_code=307)
+
+
 _REPO = Path(__file__).resolve().parent
+
+
+def _teacher_track_closed_rows(signal_track: str) -> list[dict]:
+    """仅统计带业务轨标记且已平仓的 memos（signal_track 与主池/实验轨并列）。"""
+    p = _REPO / "trade_memory.json"
+    if not p.exists():
+        return []
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        rows, _ = _trade_memory_parse(raw)
+    except Exception:
+        return []
+    st = str(signal_track).strip()
+    out: list[dict] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("signal_track") or "").strip() != st:
+            continue
+        if r.get("profit") is None:
+            continue
+        out.append(r)
+    return out
+
+
+def _teacher_metrics_bundle(signal_track: str, today_bj: str) -> dict[str, Any]:
+    closed = _teacher_track_closed_rows(signal_track)
+    today = [r for r in closed if str(r.get("date") or "")[:10] == today_bj]
+    n, nt = len(closed), len(today)
+    if not closed:
+        return {
+            "n_closed": 0,
+            "n_today": 0,
+            "win_rate": "—",
+            "avg_pnl": "—",
+            "today_win_rate": "—",
+        }
+    wins = len([r for r in closed if float(r.get("profit") or 0) > 0])
+    wt = len([r for r in today if float(r.get("profit") or 0) > 0])
+    wr = f"{round(wins / n * 100, 2)}%"
+    twr = f"{round(wt / nt * 100, 2)}%" if nt else "—"
+    ap = sum(float(r.get("profit") or 0) for r in closed) / n
+    return {
+        "n_closed": n,
+        "n_today": nt,
+        "win_rate": wr,
+        "avg_pnl": f"{ap:.4f}%",
+        "today_win_rate": twr,
+    }
+
+
+def _teacher_recent_rows_html(signal_track: str, limit: int = 20) -> str:
+    rows = _teacher_track_closed_rows(signal_track)
+
+    def _k(r: dict) -> str:
+        return str(r.get("close_time") or r.get("entry_time") or "")
+
+    rows.sort(key=_k)
+    tail = rows[-limit:]
+    if not tail:
+        return f'<tr><td colspan="7" class="muted">暂无已平仓样本。后续接入写入后需 <code>signal_track={html.escape(signal_track)}</code>。</td></tr>'
+    lines: list[str] = []
+    for r in tail:
+        sym = html.escape(str(r.get("symbol") or "—"))
+        dire = html.escape(str(r.get("direction") or "—"))
+        pr = html.escape(str(r.get("profit") or "—"))
+        cr = html.escape(str(r.get("close_reason") or "—"))
+        dt = html.escape(str(r.get("date") or "—"))
+        et = html.escape(str(r.get("entry_time") or "—")[:19])
+        ct = html.escape(str(r.get("close_time") or "—")[:19])
+        lines.append(
+            f"<tr><td>{dt}</td><td>{sym}</td><td>{dire}</td><td>{pr}</td>"
+            f"<td>{cr}</td><td>{et}</td><td>{ct}</td></tr>"
+        )
+    return "\n".join(lines)
+
+
+def _html_teacher_track_page(
+    *,
+    active_strip: str,
+    title: str,
+    signal_track: str,
+    intro: str,
+    kpi_note: str,
+) -> HTMLResponse:
+    today_bj = datetime.now(_BJ).strftime("%Y-%m-%d")
+    m = _teacher_metrics_bundle(signal_track, today_bj)
+    strip = _top_entry_strip(active_strip)
+    recent = _teacher_recent_rows_html(signal_track, 20)
+    body = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>{html.escape(title)}</title>
+<style>
+body{{background:#0f1419;color:#e8eef7;font-family:system-ui;padding:20px;max-width:960px;margin:0 auto;}}
+a{{color:#5c7cfa;}}
+.top-entry-strip {{
+  display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;
+  margin-bottom:18px;padding:12px 16px;background:rgba(0,0,0,.28);
+  border-radius:12px;border:1px solid rgba(255,255,255,.1);
+}}
+.top-entry{{color:#a5b4fc;text-decoration:none;font-size:0.95rem;padding:6px 14px;border-radius:10px;border:1px solid transparent;}}
+.top-entry:hover{{background:rgba(255,255,255,.07);color:#fff;}}
+.top-entry-active{{color:#51cf66!important;font-weight:700;border-color:rgba(81,207,102,.45);background:rgba(81,207,102,.08);}}
+.muted{{color:#8b9bb4;font-size:0.92rem;line-height:1.6;}}
+.card{{background:#1a2332;border-radius:12px;padding:16px 18px;margin:14px 0;border:1px solid rgba(255,255,255,.08);}}
+.card h2{{margin:0 0 10px;font-size:1.05rem;}}
+table.data{{width:100%;border-collapse:collapse;font-size:0.88rem;}}
+table.data th,table.data td{{border:1px solid rgba(255,255,255,.12);padding:8px;text-align:left;}}
+table.data th{{background:rgba(0,0,0,.25);}}
+code{{color:#a5d8ff;font-size:0.85em;}}
+</style></head><body>
+{_HTML_BUILD_MARKER}
+{strip}
+<h1>{html.escape(title)}</h1>
+<p class="muted">{html.escape(intro)}</p>
+<div class="card">
+<h2>汇总（按 <code>signal_track={html.escape(signal_track)}</code>）</h2>
+<table class="data">
+<tr><th>累计已平仓笔数</th><td>{m["n_closed"]}</td></tr>
+<tr><th>今日已平仓（北京日）</th><td>{m["n_today"]}</td></tr>
+<tr><th>累计胜率（毛）</th><td>{m["win_rate"]}</td></tr>
+<tr><th>今日胜率（毛）</th><td>{m["today_win_rate"]}</td></tr>
+<tr><th>累计均盈亏%</th><td>{m["avg_pnl"]}</td></tr>
+<tr><th>{html.escape(kpi_note)}</th><td class="muted">待接入日收益序列 / 持仓时长后显示</td></tr>
+</table>
+</div>
+<div class="card">
+<h2>近期已平仓（最多 20 条 · 时间升序）</h2>
+<table class="data">
+<thead><tr><th>date</th><th>标的</th><th>方向</th><th>盈亏%</th><th>原因</th><th>入场</th><th>平仓</th></tr></thead>
+<tbody>{recent}</tbody>
+</table>
+</div>
+<p class="muted">说明：本页为<strong>内部业务统计</strong>，与交易所对外展示无关；默认需开启写入开关并落库 <code>signal_track</code> 后才有样本。环境变量见 <code>live_trading.py</code> 顶部 <code>LONGXIA_TEACHER_*</code>。</p>
+<p><a href="/decision?symbol=SOL/USDT">返回决策看板</a></p>
+</body></html>"""
+    return HTMLResponse(content=body, headers=_HTML_NO_CACHE_HEADERS)
 
 
 @app.get("/daily_review", response_class=HTMLResponse)
@@ -1700,9 +1850,6 @@ body {{
   box-shadow: var(--card-shadow);
 }}
 .memos-banner strong {{ color: #ffe066; font-weight: 600; }}
-.memos-banner-links {{ margin-top: 12px; line-height: 1.55; }}
-.memos-banner-links a {{ color: #a5d8ff; text-decoration: underline; }}
-.banner-dot {{ margin: 0 8px; color: var(--muted); }}
 .memos-banner-meta {{ margin-top: 6px; font-size: 0.82rem; color: var(--muted); }}
 .data-table.dense {{ font-size: 0.72rem; }}
 .data-table.dense th, .data-table.dense td {{ padding: 4px 5px; vertical-align: top; }}
@@ -1766,14 +1913,6 @@ h1 {{
   position: fixed; bottom: 12px; right: 14px; font-size: 0.75rem; color: var(--muted);
   background: rgba(0,0,0,.5); padding: 6px 12px; border-radius: 8px; z-index: 10;
 }}
-.home-copytrade-top {{
-  text-align: center; margin: 0 0 14px 0; padding: 10px 14px;
-  background: rgba(0,0,0,.28); border-radius: 12px; border: 1px solid rgba(255,255,255,.1);
-}}
-.home-copytrade-top a {{
-  color: #a5d8ff; text-decoration: none; font-size: 0.98rem; font-weight: 600;
-}}
-.home-copytrade-top a:hover {{ text-decoration: underline; color: #cfe0ff; }}
 code {{ color: #a5d8ff; font-size: 0.85em; }}
 .wait-big {{
   font-size: 1.35rem; font-weight: 800; color: #ffe066; text-align: center;
@@ -1784,15 +1923,16 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 .v314-signal p {{ margin: 0.2em 0; }}
 .v314-signal .v314-ts {{ color: var(--muted); font-size: 0.88rem; margin-top: 0.65em; }}
 </style></head><body>
+{_HTML_BUILD_MARKER}
 <div class="page-wrap">
-<div class="home-copytrade-top"><a href="/copytrade?symbol={qsym}">跟单简版（带单观看）</a></div>
+{_top_entry_strip("decision", sym)}
 {_memos_banner_html()}
 
 <div class="nav-strip">{nav_html}</div>
 
 {_memos_reflect_bar_html()}
 
-<h1>多币种指标看板<span class="v316-tag">· Gate.io CCXT（数据层 V3.17.0）</span></h1>
+<h1>多币种指标看板<span class="v316-tag">· Gate.io CCXT（数据层 {html.escape(ENGINE_VERSION)}）</span></h1>
 <p class="subline">当前交易对：<b>{html.escape(sym)}</b>
 &nbsp;·&nbsp; 数据源 <code>{html.escape(_meta_source_zh(meta.get("source")))}</code>
 &nbsp;·&nbsp; 1 分钟 K 线根数 <b>{html.escape(str(meta.get("count", "")))}</b></p>
@@ -1871,7 +2011,7 @@ setTimeout(function() {{
 }}, 45000);
 </script>
 </body></html>"""
-    return HTMLResponse(content=body)
+    return HTMLResponse(content=body, headers=_HTML_NO_CACHE_HEADERS)
 
 
 def fmt_price(v) -> str:
@@ -2071,8 +2211,18 @@ table.simple{{width:100%;border-collapse:collapse;font-size:0.95rem;}}
 table.simple td{{padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);}}
 table.simple td:first-child{{color:#8b9bb4;width:42%;}}
 a{{color:#7c9cff;}}
+.top-entry-strip{{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;margin-bottom:14px;padding:12px 16px;background:rgba(0,0,0,.28);border-radius:12px;border:1px solid rgba(255,255,255,.1);}}
+.top-entry{{color:#a5b4fc;text-decoration:none;font-size:0.95rem;padding:6px 14px;border-radius:10px;border:1px solid transparent;}}
+.top-entry:hover{{background:rgba(255,255,255,.07);color:#fff;}}
+.top-entry-active{{color:#51cf66!important;font-weight:700;border-color:rgba(81,207,102,.45);background:rgba(81,207,102,.08);}}
+.memos-banner{{background:linear-gradient(135deg,#2b2149 0%,#1a3d52 50%,#143d2e 100%);border:1px solid rgba(124,92,255,.35);border-radius:14px;padding:16px 20px;margin-bottom:18px;font-size:1.02rem;line-height:1.65;text-align:center;color:#f0f4ff;}}
+.memos-banner strong{{color:#ffe066;font-weight:600;}}
+.memos-banner-meta{{margin-top:6px;font-size:0.82rem;color:#8b9bb4;}}
 </style></head><body>
+{_HTML_BUILD_MARKER}
 <div class="copytrade-page">
+{_top_entry_strip("copytrade", sym)}
+{_memos_banner_html()}
 <h1>跟单简版</h1>
 <p class="muted" style="margin:0 0 8px">币种切换（与决策页同源）</p>
 <p style="margin:0 0 14px">{nav_ct_html}</p>
@@ -2113,7 +2263,37 @@ setTimeout(function(){{ window.location.href = "/copytrade?symbol={qsym}"; }}, 4
 </script>
 </div>
 </body></html>"""
-    return HTMLResponse(content=body)
+    return HTMLResponse(content=body, headers=_HTML_NO_CACHE_HEADERS)
+
+
+@app.get("/teacher_boost", response_class=HTMLResponse)
+@app.get("/teacher_boost/", include_in_schema=False)
+@app.get("/teacher-boost", response_class=HTMLResponse)
+@app.get("/tb", response_class=HTMLResponse)
+def page_teacher_boost():
+    """带单老师·起号轨：内部统计页（signal_track=boost），与主观察池/实验轨数据隔离。"""
+    return _html_teacher_track_page(
+        active_strip="teacher_boost",
+        title="带单老师 · 起号轨（内部统计）",
+        signal_track=SIGNAL_TRACK_BOOST,
+        intro="业务向：冲排名、单日少量高质量单等；与交易所对外展示无关。样本需 memos 写入 signal_track=boost。",
+        kpi_note="扩展 KPI（回撤观感等）",
+    )
+
+
+@app.get("/teacher_combat", response_class=HTMLResponse)
+@app.get("/teacher_combat/", include_in_schema=False)
+@app.get("/teacher-combat", response_class=HTMLResponse)
+@app.get("/tc", response_class=HTMLResponse)
+def page_teacher_combat():
+    """带单老师·实战轨：内部统计页（signal_track=combat）。"""
+    return _html_teacher_track_page(
+        active_strip="teacher_combat",
+        title="带单老师 · 实操轨（内部统计）",
+        signal_track=SIGNAL_TRACK_COMBAT,
+        intro="业务向：低杠杆、中长持仓、控回撤；与交易所对外展示无关。样本需 memos 写入 signal_track=combat。",
+        kpi_note="夏普 / 最大回撤 / 均持仓时长",
+    )
 
 
 if __name__ == "__main__":

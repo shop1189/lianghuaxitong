@@ -7,7 +7,7 @@
 
 ## 1) 当前基线（已确认）
 
-- **数据层 / 对外版本**：**V3.17.0**（`GET /api/version`、决策页「数据层」、`data_fetcher` 启动行）。  
+- **数据层 / 对外版本**：**V3.18.0**（`GET /api/version`、决策页「数据层」、`data_fetcher` 启动行）。  
 - **备份标签（可回滚）**：`restore-pre-v317-patch-2026-04-18`、`restore-pre-phase-b-2026-04-18`；离线包见 `PROJECT_MEMORY.md`。  
 - **Hermes**：`hermes_outbox/` 技能库；`scripts/hft_skill_auto_ingest.py` 自动入脑（cron 可选）。  
 - **主观察池 / 实验轨**：开仓筛选与档位宽度以 `live_trading` / 环境变量为准；**不**在本文件逐条复述。

@@ -17,7 +17,7 @@
 - 实验轨环境变量速查：`live_trading.py` 顶部注释
 - HFT 技能库共识（v1）：`docs/quant_hft_skill_consensus_v1.md`
 - **Hermes 配合清单（转对方执行）**：`docs/HERMES_TEAM_HANDOFF.md`
-- 对外引擎版本（监控）：`GET /api/version` → `{"engine":"V3.17.0",...}`
+- 对外引擎版本（监控）：`GET /api/version` → `{"engine":"V3.18.0",...}`
 
 ## 3) 发布割接留档（V3.17.0 · 2026-04-18）
 
@@ -42,6 +42,12 @@
 - **健康快检**：`scripts/phase1_health_check.py`（`trade_memory` / `live_trading_state` / `pandas_ta`）。  
 - **备份（收口前一刻）**：标签 **`restore-pre-upgrade-wrapup-2026-04-18`**；离线包 `/root/longxia_backups/longxia_system-restore-pre-upgrade-wrapup-2026-04-18.tar.gz`。  
 - **修补**：文档约定中的「后续小改、Hermes 版式、策略向 B」等，**不**与本节同一批次强绑；按 `UPGRADE_PLAN` 阶段 B～D 另排期。
+
+## 3.4) V3.18.0 大升级留档（2026-04-19）
+
+- **性质**：发布标识对齐 **V3.18.0**（决策页、`GET /api/version`、`data_fetcher` 启动行）；主观察池可接结构风控（`LONGXIA_STRUCTURE_GUARD`）；导航去重；新增 `scripts/backup_big_bundle.sh` 整仓大包。
+- **离线全量包（本机，权威）**：`backups/longxia_FULL_LATEST.tar.gz` → 指向当前唯一全量包（含 `venv/`、`memos_ref/`、`.git`、`trade_memory.json` 等；`backups/` 内旧 `.tar.gz` 已清理，仅保留最新一份）。**不在 Git 仓库内**，请自行拷网盘/U 盘。
+- **策略内核**：未在此批次单独改 TP/SL 数学定义；以 `live_trading` / `evolution_core` 与 env 为准。
 
 ## 4) Hermes 技能包 · 自动入脑（可选 cron）
 

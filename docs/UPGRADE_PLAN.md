@@ -12,6 +12,7 @@
 ## 阶段 A — 入口与索引（已落地）
 
 - [x] **V3.17.0 发布标识**：决策页「数据层」、`data_fetcher` 启动行、`GET /api/version`；**不**含策略内核变更（见 `PROJECT_MEMORY.md` §3）
+- [x] **V3.18.0 发布标识**：同上链路 bump；主观察池结构风控与整仓备份脚本；见 `PROJECT_MEMORY.md` §3.4
 - [x] 根目录 `README.md`：短索引 + 链到 `PROJECT_MEMORY.md`、`.cursor/rules/`、`.cursor/HERMES_SESSION_RESTORE.md`、`live_trading.py` 头注释、`docs/UPGRADE_PLAN.md`
 - [x] `.cursor/WORKSPACE_IDENTITY.txt`：指向 `.cursor/rules/` 与根 `README.md`
 - [x] `PROJECT_MEMORY.md` §1：互链到 `README.md`

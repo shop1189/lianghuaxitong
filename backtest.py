@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-阶段 A 最小闭环回测（V3.17.0+）：
+阶段 A 最小闭环回测（V3.18.0+）：
 - 数据：Gate.io / CCXT（data_fetcher.fetch_ohlcv，与线上一致）
 - 平仓：utils.trade_exit_rules.first_exit_tick（同源）；bar 内用 OHLC 保守判定
 - SL/TP：复用 live_trading._levels_for_direction（main）/ _experiment_levels_for_direction（experiment）

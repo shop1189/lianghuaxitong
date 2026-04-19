@@ -11,6 +11,7 @@ RestartSec=3
 Environment=PYTHONUNBUFFERED=1
 Environment=LONGXIA_DYNAMIC_LEVELS=1
 Environment=LONGXIA_SCALED_EXIT=1
+Environment=LONGXIA_STRUCTURE_GUARD=1
 
 [Install]
 WantedBy=multi-user.target

@@ -1,4 +1,4 @@
-"""北京时间与记录展示辅助（longxia_system 数据层 V3.17.0）。"""
+"""北京时间与记录展示辅助（longxia_system 数据层 V3.18.0）。"""
 from __future__ import annotations
 
 from datetime import datetime, timezone

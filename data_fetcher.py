@@ -18,7 +18,7 @@ def _gate_ex() -> Any:
 
 
 def log_v317_engine_ready() -> None:
-    print("[v317] proxy data_fetcher ready (data layer V3.17.0)")
+    print("[v318] proxy data_fetcher ready (data layer V3.18.0)")
 
 
 def log_v316_engine_ready() -> None:
