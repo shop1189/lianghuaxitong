@@ -63,3 +63,28 @@
 ```
 
 亦可改为 `*/30 * * * *` 每 30 分钟。首次可手动：`python3 scripts/hft_skill_auto_ingest.py`。
+
+## 5) 关键主文件防护与追责（2026-04-20）
+
+已落地：
+
+- 完整性基线与巡检：`scripts/critical_files_guard.py`
+  - 基线：`logs/critical_files_baseline.json`
+  - 状态：`logs/critical_files_guard_status.json`
+  - 日志：`logs/critical_files_guard.log`
+- 定时守护：`scripts/run_critical_files_guard.sh`
+  - 安装器：`scripts/install_critical_guard_cron.sh`
+  - cron：每 5 分钟 + 开机检查
+- 启动前阻断：`scripts/start_main_guarded.sh`
+  - 先验关键文件完整性，失败则拒绝启动 `main.py`
+- 法证审计（谁在何时改/删文件）：`auditd`
+  - 安装器：`scripts/install_forensics_auditd.sh`
+  - 查询：`scripts/query_critical_file_audit.sh`
+  - 审计 key：`longxia_critical`
+
+运维约定：
+
+- 主服务建议通过 `scripts/start_main_guarded.sh` 启动，避免裸启动 `python main.py`。
+- 关键文件合法升级后，必须刷新基线：
+  - `python3 scripts/critical_files_guard.py --init-baseline`
+- 事故排查与应急流程见：`docs/critical_file_protection_sop.md`
