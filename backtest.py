@@ -28,11 +28,13 @@ from data_fetcher import fetch_ohlcv
 from indicator_upgrade import AdvancedIndicatorEngine, rsi as rsi_series
 from live_trading import (
     _calc_probs,
-    _experiment_entry_filter_kronos_light,
+    _experiment_entry_filter,
+    _experiment_mode_normalized,
     _experiment_levels_for_direction,
     _levels_for_direction,
     _sig_label_from_rsi_t5,
     _tf_trend_word,
+    beta_posterior_mean_for_replay_bar,
     experiment_km_for_bar,
 )
 from utils.market_regime_state import RegimeMarkovTracker
@@ -163,7 +165,12 @@ def _experiment_km_for_backtest_bar(
     markov_template: str,
     use_markov_threshold_template: bool = False,
 ) -> Dict[str, Any]:
-    """与线上一致：实验轨 + kronos_light 筛选 + Markov（内存 tracker，不写 logs）。"""
+    """构造实验轨 bar 快照（experiment_km_for_bar + Markov 内存 tracker，不写 logs）。
+
+    入场是否通过由 :func:`live_trading._experiment_entry_filter` 按
+    ``LONGXIA_EXPERIMENT_MODE``（legacy / kronos_light / …）判定，与线上一致；
+    勿在此处假定始终使用 kronos_light 门槛。
+    """
     rsi_1m = 50.0
     if len(closes) >= 15:
         s = rsi_series(pd.Series(closes), 14)
@@ -313,6 +320,8 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
     )
     use_tpl = bool(getattr(args, "use_markov_threshold_template", False))
     last_exp_entry_ms = 0
+    # 与 get_v313_decision_snapshot 一致：legacy 等过滤依赖 bayes_posterior_winrate；仅用内存状态，不写 bayes_beta_state.json
+    bayes_replay_st: Dict[str, Any] = {"alpha": 2.0, "beta": 2.0, "last_update_ts": -1e30}
 
     for i in range(warmup, len(rows)):
         ts, o, h, l, c, _v = rows[i]
@@ -376,7 +385,11 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
                 markov_template=markov_tpl,
                 use_markov_threshold_template=use_tpl,
             )
-            if not _experiment_entry_filter_kronos_light(km_bar):
+            sc = float(km_bar.get("consistency_score") or 0.0)
+            km_bar["bayes_posterior_winrate"] = beta_posterior_mean_for_replay_bar(
+                sc, t_ms / 1000.0, bayes_replay_st
+            )
+            if not _experiment_entry_filter(km_bar):
                 continue
             if km_bar.get("experiment_markov_template_enabled"):
                 mf = float(km_bar.get("experiment_markov_max_frequency_sec") or 0.0)
@@ -479,6 +492,9 @@ def run_backtest(args: argparse.Namespace) -> Tuple[Path, Path]:
         "timeframe": args.timeframe,
         "limit": int(args.limit),
         "level_mode": level_mode,
+        "experiment_mode": _experiment_mode_normalized()
+        if level_mode == "experiment"
+        else "n/a",
         "markov_template": markov_tpl if level_mode == "experiment" else "n/a",
         "use_markov_threshold_template": bool(use_tpl) if level_mode == "experiment" else False,
         "markov_optimized": "1" if (level_mode == "experiment" and use_tpl) else "0",

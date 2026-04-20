@@ -657,6 +657,32 @@ def beta_update_from_score_throttled(score: float) -> float:
     b += lose_w * 0.35
     _beta_save(a, b)
     return a / (a + b + 1e-9)
+
+
+def beta_posterior_mean_for_replay_bar(
+    score: float, bar_ts_sec: float, st: Dict[str, Any]
+) -> float:
+    """与 ``beta_update_from_score_throttled`` 同更新律，用于 bar 回放。
+
+    - 使用 K 线时间 ``bar_ts_sec``（秒）做 44s 节流，与线上用 wall clock 不同但回放单调递增、可复现；
+    - 仅读写 ``st`` 中 ``alpha`` / ``beta`` / ``last_update_ts``，**不**读写到 ``bayes_beta_state.json``。
+
+    ``get_v313_decision_snapshot`` 在合并 ``experiment_km_for_bar`` 前写入 ``bayes_posterior_winrate``；
+    回测侧应对 ``km_bar`` 做同等字段补齐，否则 ``_experiment_entry_filter_legacy`` 易因 post=0 恒不满足。
+    """
+    a = float(st.get("alpha", 2.0))
+    b = float(st.get("beta", 2.0))
+    last = float(st.get("last_update_ts", -1e30))
+    if bar_ts_sec - last < 44.0:
+        return a / (a + b + 1e-9)
+    win_w = max(0.0, min(1.0, (score + 1) / 2))
+    lose_w = 1.0 - win_w
+    a += win_w * 0.35
+    b += lose_w * 0.35
+    st["alpha"] = a
+    st["beta"] = b
+    st["last_update_ts"] = bar_ts_sec
+    return a / (a + b + 1e-9)
 # ---------------------------------------------------------------------------
 # PatternRecognizer：在 detect_kline_pattern 基础上扩展
 # ---------------------------------------------------------------------------
