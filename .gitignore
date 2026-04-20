@@ -20,7 +20,9 @@ logs/
 nohup.out
 trade_memory.json
 live_trading_state.json
-outputs/
+outputs/*
+!outputs/env/
+!outputs/env/requirements_lock_*.txt
 backups/
 *.tar.gz
 
