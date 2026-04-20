@@ -57,6 +57,7 @@ legacy 实验轨（与线上一致时常用）：
 
 ## 第二阶段入口（冻结基线 + 双轨小窗）
 
+- **新机/同步/校验（与工单同源，已进树）**：`scripts/setup_new_machine.sh`、`scripts/sync_from_server.sh`、`scripts/verify_env.sh`
 - **锁依赖**：`bash scripts/pip_freeze_lock.sh` → 写入 `outputs/env/requirements_lock_<时间戳>.txt`
 - **双轨 3d/14d 最小验收（非大网格）**：`bash scripts/smoke_dual_track_3d_14d.sh` 或 `bash scripts/smoke_dual_track_3d_14d.sh BTC/USDT`  
   - 1m：`limit = 天 * 1440`；主轨 `cd2 mh40`，实验轨 `cd3 mh120` + 默认 legacy/Markov off export（可用环境变量覆盖）
