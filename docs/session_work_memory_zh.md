@@ -141,7 +141,7 @@
 
 ## 九、下一步（操作 checklist）
 
-1. **跑双轨小窗**：`bash scripts/smoke_dual_track_3d_14d.sh`，读 `outputs/baseline_smoke/*_summary.json`，写结论。  
+1. ~~**跑双轨小窗**~~：**已执行**（见 `docs/step3_dual_track_smoke_results.md` 与 `outputs/baseline_smoke/`）。  
 2. **依赖变更再锁**：`bash scripts/pip_freeze_lock.sh`，按需 `git add` 新 lock。  
 3. **云端**：能访问 GitHub 后 `git pull`，补 `git show e9dd09b` 树校验（非阻塞项）。  
 4. **脏文件**：`main.py`、`bayes_beta_state.json` 等未与工单提交绑定，勿误推。
