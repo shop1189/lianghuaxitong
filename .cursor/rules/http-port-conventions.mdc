@@ -1,0 +1,14 @@
+---
+description: HTTP 端口约定（Phase-1 Web vs 回测/快轨）
+alwaysApply: true
+---
+
+# HTTP 端口（勿混用）
+
+与 `docs/RISK_TRUTH_LAYER_PHASE1.md`「推荐端口分工」一致：
+
+- **`python3 main.py`（Web / 决策页 / `/api/version`）默认 `18080`**：Phase-1 风险真理层 + Web 验收；需要改端口仍用 `LONGXIA_HTTP_PORT` 或 `PORT` 覆盖。显式对齐可 `source config/http_port_phase1_web.env`。
+- **`8080`**：回测 / 快轨并行等任务；`config/exp_fastlane_A.env` / `exp_fastlane_B.env` 已设 `LONGXIA_HTTP_PORT=8080`，会把该次启动的 `main.py` 绑到 **8080**，与默认 **18080** 实例并行、互不抢端口。
+- **脚本探活**：`scripts/exp_track_fastlane_3day.sh` 使用 `http://127.0.0.1:${LONGXIA_HTTP_PORT:-8080}/api/version`，与所 `source` 的 env 一致；**不要**在快轨脚本里写死与当前 env 冲突的端口。
+
+编写或修改脚本时：`curl`、`LONGXIA_PRESSURE_BASE` 等须与**当前进程**实际 `LONGXIA_HTTP_PORT` 一致。

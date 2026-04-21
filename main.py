@@ -27,6 +27,7 @@ def _load_main_dotenv() -> None:
 
 _load_main_dotenv()
 
+import os
 import html
 import json
 from typing import Any, List, Optional
@@ -71,7 +72,7 @@ MEMOS_BANNER = (
     "系统已开启全自动 memos 模拟记录与自我进化（开平仓与统计均由程序自动完成，您无需手动操作）"
 )
 
-# 部署自检：curl -s 'http://127.0.0.1:8080/copytrade' | grep longxia-ui
+# 部署自检：curl -s 'http://127.0.0.1:18080/copytrade' | grep longxia-ui
 # 若无输出，说明当前 HTTP 进程不是本仓库这份 main.py（未拉代码 / 工作目录不对 / 反代到旧实例）。
 _HTML_BUILD_MARKER = "<!-- longxia-ui:nav-teacher-v2 -->"
 _HTML_NO_CACHE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
@@ -284,6 +285,43 @@ def _result_cn(r: dict) -> str:
     return "—"
 
 
+def _tp1_be_status_cn(r: dict) -> str:
+    """展示用：TP1/BE 状态（重点用于识别“未平但已TP1并抬到BE”）。"""
+    if r.get("tp1_hit") is True:
+        if r.get("profit") is None:
+            return "TP1已触发·持仓中"
+        return "TP1已触发"
+    if r.get("experiment_tp1_done") is True:
+        if r.get("profit") is None:
+            return "TP1已触发·BE保护中"
+        return "TP1已触发"
+    cr = _resolved_close_bracket(r)
+    if cr == "BE":
+        return "已保本平仓·BE"
+    # 兜底推断：做多 SL 上移到 >= entry / 做空 SL 下移到 <= entry，视为已进入 BE 保护
+    if r.get("profit") is None:
+        try:
+            d = str(r.get("direction") or "")
+            e = float(r.get("entry"))
+            s = float(r.get("sl"))
+            if (d.startswith("做多") and s >= e) or (d.startswith("做空") and s <= e):
+                return "疑似TP1后·BE保护中"
+        except Exception:
+            pass
+    return "—"
+
+
+def _tp1_be_time_cn(r: dict) -> str:
+    """展示用：TP1/BE关键时间（优先 TP1 命中时间，其次 BE 平仓时间）。"""
+    tp1_time = r.get("tp1_hit_time") or r.get("experiment_tp1_time")
+    if tp1_time:
+        return _iso_to_bj_display(tp1_time)
+    cr = _resolved_close_bracket(r)
+    if cr == "BE" and r.get("close_time"):
+        return _iso_to_bj_display(r.get("close_time"))
+    return "—"
+
+
 def _fmt_pct(v: object, digits: int = 4) -> str:
     if v is None:
         return "—"
@@ -345,6 +383,9 @@ def _experiment_open_rows_today(today_bj: str) -> list[dict]:
             "virtual_signal": False,
             "symbol": sym,
             "levels_source": ot.get("levels_source"),
+            "experiment_tp1_done": ot.get("experiment_tp1_done"),
+            "experiment_partial_ratio": ot.get("experiment_partial_ratio"),
+            "experiment_tp1_time": ot.get("experiment_tp1_time"),
             "markov_template": ot.get("markov_template"),
             "experiment_markov_template_enabled": ot.get(
                 "experiment_markov_template_enabled"
@@ -689,6 +730,8 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
         pair = f"{dire} {sym}".strip()
         src = html.escape(_fib_source_snippet(r)[:220])
         rr = html.escape(_rr_gross_net_str(r))
+        tp1_be = html.escape(_tp1_be_status_cn(r))
+        tp1_be_time = html.escape(_tp1_be_time_cn(r))
         return (
             f"<tr><td>{i}</td><td>{html.escape(track)}</td>"
             f"<td>{html.escape(_iso_to_bj_display(r.get('entry_time')))}</td>"
@@ -703,6 +746,7 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
             f"<td>{rr}</td>"
             f"<td>{html.escape(str(r.get('close') if r.get('close') is not None else '—'))}</td>"
             f"<td>{gross_s}</td><td>{fee}</td><td>{net_s}</td>"
+            f"<td>{tp1_be}</td><td>{tp1_be_time}</td>"
             f"<td>{html.escape(_result_cn(r))}</td></tr>"
         )
 
@@ -716,9 +760,9 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
 <thead><tr>
 <th>序号</th><th>轨道</th><th>入场时间（北京）</th><th>平仓时间（北京）</th><th>方向·标的</th>
 <th>入场价</th><th>SL</th><th>TP1</th><th>TP2</th><th>TP3</th><th>价位来源</th><th>RR（毛/净）</th>
-<th>平仓价</th><th>毛盈亏（%）</th><th>手续费（%）</th><th>净盈亏（%）</th><th>结果</th>
+<th>平仓价</th><th>毛盈亏（%）</th><th>手续费（%）</th><th>净盈亏（%）</th><th>TP1/BE状态</th><th>TP1/BE时间</th><th>结果</th>
 </tr></thead>
-<tbody>{mh or '<tr><td colspan="17">本日暂无记录</td></tr>'}</tbody>
+<tbody>{mh or '<tr><td colspan="19">本日暂无记录</td></tr>'}</tbody>
 </table>
 """
 
@@ -729,9 +773,9 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
 <thead><tr>
 <th>序号</th><th>轨道</th><th>入场时间（北京）</th><th>平仓时间（北京）</th><th>方向·标的</th>
 <th>入场价</th><th>SL</th><th>TP1</th><th>TP2</th><th>TP3</th><th>价位来源</th><th>RR（毛/净）</th>
-<th>平仓价</th><th>毛盈亏（%）</th><th>手续费（%）</th><th>净盈亏（%）</th><th>结果</th>
+<th>平仓价</th><th>毛盈亏（%）</th><th>手续费（%）</th><th>净盈亏（%）</th><th>TP1/BE状态</th><th>TP1/BE时间</th><th>结果</th>
 </tr></thead>
-<tbody>{eh or '<tr><td colspan="17">本日暂无记录</td></tr>'}</tbody>
+<tbody>{eh or '<tr><td colspan="19">本日暂无记录</td></tr>'}</tbody>
 </table>
 """
 
@@ -1051,6 +1095,28 @@ def _zh_decision_copy(text: object) -> str:
     s = s.replace(" | ", " · ")
     s = s.replace("RSI(1m)", "RSI（1分钟）")
     return s
+
+
+def _risk_advisory_html(km: dict, profile: str = "main") -> str:
+    bundle = km.get("risk_advisory_bundle") if isinstance(km, dict) else {}
+    adv = bundle.get(profile) if isinstance(bundle, dict) else None
+    if not isinstance(adv, dict):
+        adv = km.get("risk_advisory") if isinstance(km, dict) else {}
+    if not isinstance(adv, dict) or not adv:
+        return '<p class="muted">风险真理层：暂无可用建议。</p>'
+    warnings = adv.get("warnings") or []
+    wtxt = "、".join(str(x) for x in warnings) if warnings else "无"
+    return (
+        "<table class=\"metrics\">"
+        f"<tr><td>模式</td><td>{html.escape(str(adv.get('mode', 'observe')))}</td></tr>"
+        f"<tr><td>板块画像</td><td>{html.escape(profile)}</td></tr>"
+        f"<tr><td>建议风险金</td><td>{html.escape(str(round(float(adv.get('risk_usdt', 0.0) or 0.0), 4)))} USDT</td></tr>"
+        f"<tr><td>建议名义仓位</td><td>{html.escape(str(round(float(adv.get('suggested_notional_usdt', 0.0) or 0.0), 4)))} USDT</td></tr>"
+        f"<tr><td>建议杠杆 / 上限</td><td>{html.escape(str(adv.get('recommended_leverage', '—')))} / {html.escape(str(adv.get('max_allowed_leverage', '—')))}</td></tr>"
+        f"<tr><td>有效止损比例</td><td>{html.escape(str(round(float(adv.get('effective_stop_pct', 0.0) or 0.0) * 100.0, 4)))}%</td></tr>"
+        f"<tr><td>风险提示</td><td>{html.escape(wtxt)}</td></tr>"
+        "</table>"
+    )
 
 
 def _evolution_block() -> str:
@@ -1474,6 +1540,12 @@ def _html_teacher_track_page(
     m = _teacher_metrics_bundle(signal_track, today_bj)
     strip = _top_entry_strip(active_strip)
     recent = _teacher_recent_rows_html(signal_track, 20)
+    try:
+        km = get_v313_decision_snapshot(force_refresh=True, symbol="SOL/USDT")
+    except Exception:
+        km = {}
+    risk_profile = "teacher_boost" if signal_track == SIGNAL_TRACK_BOOST else "teacher_combat"
+    risk_html = _risk_advisory_html(km, risk_profile)
     body = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>{html.escape(title)}</title>
@@ -1517,6 +1589,10 @@ code{{color:#a5d8ff;font-size:0.85em;}}
 <thead><tr><th>date</th><th>标的</th><th>方向</th><th>盈亏%</th><th>原因</th><th>入场</th><th>平仓</th></tr></thead>
 <tbody>{recent}</tbody>
 </table>
+</div>
+<div class="card">
+<h2>资金/仓位/杠杆基础层（observe）</h2>
+{risk_html}
 </div>
 <p class="muted">说明：本页为<strong>内部业务统计</strong>，与交易所对外展示无关；默认需开启写入开关并落库 <code>signal_track</code> 后才有样本。环境变量见 <code>live_trading.py</code> 顶部 <code>LONGXIA_TEACHER_*</code>。</p>
 <p><a href="/decision?symbol=SOL/USDT">返回决策看板</a></p>
@@ -1613,6 +1689,8 @@ def page_pullback_watch(symbol: str = Query("SOL/USDT")):
         ("BTC 高点回撤%", km.get("main_btc_drop_from_high_pct")),
         ("BTC 低点反抽%", km.get("main_btc_bounce_from_low_pct")),
         ("BTC 锚定说明", km.get("main_btc_anchor_reason")),
+        ("风险真理层画像", "main"),
+        ("风险建议（observe）", km.get("risk_advisory")),
     ]
     rows_html = []
     for lab, val in pairs:
@@ -1979,6 +2057,11 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 </div>
 
 <div class="card">
+<h2>资金/仓位/杠杆基础层（observe）</h2>
+{_risk_advisory_html(km, "main")}
+</div>
+
+<div class="card">
 <h2>CCXT 1 分钟行情快照</h2>
 <p><span style="font-size:1.15em">{ticker_html}</span>
 &nbsp; | 恐惧与贪婪指数：<b>{html.escape(str(fg))}</b></p>
@@ -2251,6 +2334,10 @@ a{{color:#7c9cff;}}
 {pos_html}
 </div>
 <div class="card">
+<h2>资金/仓位/杠杆基础层（observe）</h2>
+{_risk_advisory_html(km, "main")}
+</div>
+<div class="card">
 <h2>行情 / 模板（摘要）</h2>
 <p style="margin:0;line-height:1.65">行情（Markov）：{mk}</p>
 <p style="margin:10px 0 0;line-height:1.65">策略模板：{tpl}</p>
@@ -2297,4 +2384,26 @@ def page_teacher_combat():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    def _http_port() -> int:
+        """本地 HTTP 端口。
+
+        默认 **18080**：Phase-1 风险真理层 + Web / 决策页 / ``/api/version`` 验收（见
+        ``docs/RISK_TRUTH_LAYER_PHASE1.md``）。回测 / 快轨并行起第二套进程时用 **8080**，
+        通过 ``LONGXIA_HTTP_PORT=8080``（如 ``config/exp_fastlane_*.env``、
+        ``config/http_port_backtest.env``）覆盖，避免与 18080 主实例抢端口。
+
+        通用覆盖键：``LONGXIA_HTTP_PORT`` 或 ``PORT``（systemd/容器常用）。
+        """
+        for k in ("LONGXIA_HTTP_PORT", "PORT"):
+            raw = str(os.environ.get(k, "")).strip()
+            if not raw:
+                continue
+            try:
+                p = int(raw)
+                if 1 <= p <= 65535:
+                    return p
+            except ValueError:
+                continue
+        return 18080
+
+    uvicorn.run(app, host="0.0.0.0", port=_http_port())

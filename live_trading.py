@@ -83,6 +83,11 @@ from utils.trade_exit_rules import first_exit_tick, virtual_hit_profit_and_close
 from data_fetcher import _fetch_current_ticker_price_sync
 from data_fetcher import fetch_ohlcv as gate_fetch_ohlcv
 from data.fetcher import build_indicator_snapshot
+from risk.leverage_policy import recommend_leverage
+from risk.portfolio_guard import build_warnings as risk_build_warnings
+from risk.position_sizer import size_position
+from risk.truth_store import load_capital_snapshot
+from risk import reason_codes as risk_reason_codes
 from indicator_upgrade import (
     AdvancedIndicatorEngine,
     detect_kline_pattern,
@@ -216,6 +221,139 @@ _EXPERIMENT_SCAN_SYMBOLS = (
     "XRP/USDT",
     "BNB/USDT",
 )
+
+
+def _risk_env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except Exception:
+        return float(default)
+
+
+def _risk_layer_mode() -> str:
+    # Phase-1 is fixed observe-only; ignore other values (still log as observe).
+    _ = str(os.environ.get("LONGXIA_RISK_LAYER_MODE", "observe")).strip().lower()
+    return "observe"
+
+
+def _append_risk_decision_log(payload: Dict[str, Any]) -> None:
+    p = _REPO_ROOT / "logs" / "risk_decisions.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.open("a", encoding="utf-8").write(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    )
+
+
+def _compute_risk_advisory(
+    *,
+    symbol: str,
+    side: str,
+    entry: float,
+    stop: float,
+    atr_pct: Optional[float],
+    write_log: bool = True,
+) -> Dict[str, Any]:
+    mode = _risk_layer_mode()
+    cap, cap_warnings = load_capital_snapshot()
+    equity = float(cap.get("equity_usdt", 0.0) or 0.0)
+    free_margin = float(cap.get("free_margin_usdt", 0.0) or 0.0)
+    risk_per_trade_pct = _risk_env_float("LONGXIA_RISK_PER_TRADE_PCT", 0.005)
+    fee_slippage_buffer_pct = _risk_env_float(
+        "LONGXIA_RISK_FEE_SLIPPAGE_BUFFER_PCT", 0.001
+    )
+    ps = size_position(
+        equity_usdt=equity,
+        risk_per_trade_pct=risk_per_trade_pct,
+        entry=entry,
+        stop=stop,
+        fee_slippage_buffer_pct=fee_slippage_buffer_pct,
+    )
+    warnings = list(cap_warnings)
+    if ps.get("stop_pct", 0.0) <= 0:
+        warnings.append(risk_reason_codes.STOP_INVALID)
+    if ps.get("stop_pct", 0.0) < 0.0003:
+        warnings.append(risk_reason_codes.STOP_TOO_TIGHT)
+    if ps.get("suggested_notional_usdt", 0.0) <= 0:
+        warnings.append(risk_reason_codes.POSITION_SIZE_INVALID)
+
+    lv = recommend_leverage(symbol=symbol, atr_pct=atr_pct, liquidity_tier=None)
+    warnings.extend(
+        risk_build_warnings(
+            open_positions=cap.get("open_positions") or [],
+            new_side=side,
+            new_notional_usdt=float(ps.get("suggested_notional_usdt", 0.0) or 0.0),
+            new_risk_usdt=float(ps.get("risk_usdt", 0.0) or 0.0),
+            equity_usdt=equity,
+            day_pnl_pct=0.0,
+        )
+    )
+
+    warning_unique = sorted(set(str(x) for x in warnings if str(x).strip()))
+    advisory = {
+        "mode": mode,
+        "source": str(cap.get("source") or "manual"),
+        "equity_usdt": equity,
+        "free_margin_usdt": free_margin,
+        "entry": float(entry),
+        "stop": float(stop),
+        "stop_pct": float(ps.get("stop_pct", 0.0) or 0.0),
+        "effective_stop_pct": float(ps.get("effective_stop_pct", 0.0) or 0.0),
+        "risk_usdt": float(ps.get("risk_usdt", 0.0) or 0.0),
+        "suggested_notional_usdt": float(ps.get("suggested_notional_usdt", 0.0) or 0.0),
+        "recommended_leverage": int(lv.get("recommended_leverage", 1) or 1),
+        "max_allowed_leverage": int(lv.get("max_allowed_leverage", 1) or 1),
+        "leverage_reason": str(lv.get("reason") or ""),
+        "warnings": warning_unique,
+    }
+    if write_log:
+        _append_risk_decision_log(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "symbol": symbol,
+                "side": side,
+                "equity_usdt": advisory["equity_usdt"],
+                "free_margin_usdt": advisory["free_margin_usdt"],
+                "entry": advisory["entry"],
+                "stop": advisory["stop"],
+                "stop_pct": advisory["stop_pct"],
+                "effective_stop_pct": advisory["effective_stop_pct"],
+                "risk_usdt": advisory["risk_usdt"],
+                "suggested_notional_usdt": advisory["suggested_notional_usdt"],
+                "recommended_leverage": advisory["recommended_leverage"],
+                "max_allowed_leverage": advisory["max_allowed_leverage"],
+                "warnings": advisory["warnings"],
+                "mode": advisory["mode"],
+            }
+        )
+    return advisory
+
+
+def _compute_risk_advisory_bundle(
+    *,
+    symbol: str,
+    side: str,
+    entry: float,
+    stop: float,
+    atr_pct: Optional[float],
+) -> Dict[str, Any]:
+    # Phase-1: all boards share one truth input; profile split is advisory-only.
+    base = _compute_risk_advisory(
+        symbol=symbol,
+        side=side,
+        entry=entry,
+        stop=stop,
+        atr_pct=atr_pct,
+        write_log=False,
+    )
+    bundle = {
+        "main": dict(base, profile="main"),
+        "experiment": dict(base, profile="experiment"),
+        "teacher_boost": dict(base, profile="teacher_boost"),
+        "teacher_combat": dict(base, profile="teacher_combat"),
+    }
+    return bundle
+
+
 def _json_dumps_safe(obj: Any) -> str:
     try:
         return json.dumps(obj, ensure_ascii=False, indent=2)
@@ -1689,6 +1827,27 @@ def get_v313_decision_snapshot(
         markov_tracker=None,
         markov_template=None,
     )
+    atr_pct_for_risk = None
+    try:
+        atr_raw = (adv.get("supertrend_pro") or {}).get("atr_pct")
+        if atr_raw is not None:
+            atr_pct_for_risk = float(atr_raw)
+    except Exception:
+        atr_pct_for_risk = None
+    risk_advisory = _compute_risk_advisory(
+        symbol=symbol,
+        side=dir_side,
+        entry=float(entry),
+        stop=float(sl_price),
+        atr_pct=atr_pct_for_risk,
+    )
+    risk_advisory_bundle = _compute_risk_advisory_bundle(
+        symbol=symbol,
+        side=dir_side,
+        entry=float(entry),
+        stop=float(sl_price),
+        atr_pct=atr_pct_for_risk,
+    )
     return {
         "symbol": symbol,
         "prediction_cycle": "下一根 5 分钟 K线",
@@ -1743,6 +1902,8 @@ def get_v313_decision_snapshot(
         "futures_ticker_price_str": futures_price,
         "ticker_display_lines": ticker_lines_text,
         "theory_book_hints_text": theory_book_hints_text,
+        "risk_advisory": risk_advisory,
+        "risk_advisory_bundle": risk_advisory_bundle,
         **ekm,
         **brain_meta,
     }
