@@ -2,34 +2,34 @@
   "signals_date": "",
   "by_symbol": {
     "ETH/USDT": {
-      "signals_today_seen": 71,
-      "last_virt_sig_key": "2026-04-16|ETH/USDT|偏多（强）|0",
-      "signals_date": "2026-04-16"
+      "signals_today_seen": 135,
+      "last_virt_sig_key": "2026-04-21|ETH/USDT|无|0",
+      "signals_date": "2026-04-21"
     },
     "BTC/USDT": {
-      "signals_today_seen": 85,
-      "last_virt_sig_key": "2026-04-16|BTC/USDT|无|1",
-      "signals_date": "2026-04-16"
+      "signals_today_seen": 175,
+      "last_virt_sig_key": "2026-04-21|BTC/USDT|无|0",
+      "signals_date": "2026-04-21"
     },
     "DOGE/USDT": {
-      "signals_today_seen": 56,
-      "last_virt_sig_key": "2026-04-16|DOGE/USDT|无|0",
-      "signals_date": "2026-04-16"
+      "signals_today_seen": 153,
+      "last_virt_sig_key": "2026-04-21|DOGE/USDT|无|0",
+      "signals_date": "2026-04-21"
     },
     "XRP/USDT": {
-      "signals_today_seen": 60,
-      "last_virt_sig_key": "2026-04-16|XRP/USDT|无|0",
-      "signals_date": "2026-04-16"
+      "signals_today_seen": 159,
+      "last_virt_sig_key": "2026-04-21|XRP/USDT|无|0",
+      "signals_date": "2026-04-21"
     },
     "BNB/USDT": {
-      "signals_today_seen": 62,
-      "last_virt_sig_key": "2026-04-16|BNB/USDT|无|0",
-      "signals_date": "2026-04-16"
+      "signals_today_seen": 162,
+      "last_virt_sig_key": "2026-04-21|BNB/USDT|无|0",
+      "signals_date": "2026-04-21"
     },
     "SOL/USDT": {
-      "signals_today_seen": 74,
-      "last_virt_sig_key": "2026-04-16|SOL/USDT|无|0",
-      "signals_date": "2026-04-16"
+      "signals_today_seen": 146,
+      "last_virt_sig_key": "2026-04-21|SOL/USDT|无|1",
+      "signals_date": "2026-04-21"
     }
   },
   "signals_today_seen": 0,

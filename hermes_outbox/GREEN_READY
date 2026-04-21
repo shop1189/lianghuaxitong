@@ -1,4 +1,4 @@
-timestamp_utc=2026-04-19T11:30:01Z
+timestamp_utc=2026-04-21T15:50:01Z
 overall_status=green
 notes=变绿原因：trade_memory.json 可解析且有效成交记录数>0；backtest_result.csv 可解析且含 win_rate/max_drawdown/sharpe/trade_count（或同义列）；meta.json 存在且合法（schema_version + generated_at_utc）；PROJECT_MEMORY.md 存在；daily_market_notes.md 存在且日期为今/昨日
 
