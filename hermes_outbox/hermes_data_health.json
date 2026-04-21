@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-04-20T09:50:02Z",
+  "generated_at_utc": "2026-04-21T09:50:01Z",
   "availability_verdict": "暂不可用",
   "next_action": "更新 daily_market_notes.md（含当日/昨日日期或刷新文件）并同步到 Hermes inbox。",
   "overall_status": "yellow",
@@ -57,12 +57,12 @@
     },
     "project_memory_md": {
       "exists": true,
-      "mtime_iso": "2026-04-20T16:16:49"
+      "mtime_iso": "2026-04-21T14:29:15"
     },
     "daily_market_notes_md": {
       "exists": true,
       "note_date_parsed": "2026-04-18",
-      "file_date_used": "2026-04-20",
+      "file_date_used": "2026-04-21",
       "recent_ok": false
     },
     "meta_json": {
