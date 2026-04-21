@@ -1778,6 +1778,98 @@ a{{color:#5c7cfa;}}
     )
 
 
+@app.get("/risk_truth_layer", response_class=HTMLResponse)
+@app.get("/risk_phase1", response_class=HTMLResponse)
+def page_risk_truth_layer_preview(symbol: str = Query("SOL/USDT")):
+    """Phase-1 风险真理层（observe-only）预览页：用于灰度前人工确认 Web 展示。
+
+    说明：
+    - 不影响现有 `/decision` 主路径；仅新增路由便于验收对齐。
+    - 数据与 `/decision` 同源：`get_v313_decision_snapshot`。
+    """
+    sym = _pick_symbol(symbol)
+    qsym = quote(sym, safe="")
+    km = get_v313_decision_snapshot(force_refresh=True, symbol=sym)
+
+    nav_links: List[str] = []
+    for s in SYMBOL_CHOICES:
+        active = "font-weight:700;color:#ffe082;" if s == sym else "color:#9ecbff;"
+        nav_links.append(
+            f'<a style="{active}" href="/risk_truth_layer?symbol={quote(s, safe="")}">{html.escape(s)}</a>'
+        )
+    nav_html = "\n".join(
+        f'<span style="margin-right:10px">{x}</span>' for x in nav_links
+    )
+
+    bundle = km.get("risk_advisory_bundle") if isinstance(km, dict) else {}
+    bundle_json = json.dumps(bundle, ensure_ascii=False, indent=2) if isinstance(bundle, dict) else "{}"
+    adv_json = json.dumps(km.get("risk_advisory") or {}, ensure_ascii=False, indent=2)
+
+    strip = _top_entry_strip("decision", sym)
+    body = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>风险真理层 Phase-1 预览 · {html.escape(sym)}</title>
+<style>
+body{{background:#0f1419;color:#e8eef7;font-family:system-ui,sans-serif;padding:18px;max-width:980px;margin:0 auto;}}
+a{{color:#5c7cfa;}}
+h1{{font-size:1.25rem;margin:0 0 12px;}}
+.muted{{color:#8b9bb4;font-size:0.92rem;line-height:1.65;}}
+.nav-strip{{display:flex;flex-wrap:wrap;gap:6px 8px;margin-bottom:14px;padding:10px 12px;background:#1a2332;border-radius:10px;border:1px solid rgba(255,255,255,.08);}}
+.card{{background:#1a2332;border-radius:14px;padding:16px 18px;margin:14px 0;border:1px solid rgba(255,255,255,.08);}}
+.card h2{{margin:0 0 10px;font-size:1.02rem;color:#a5d8ff;}}
+.metrics{{width:100%;border-collapse:collapse;font-size:0.92rem;}}
+.metrics td{{padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.06);}}
+.metrics td:first-child{{color:#8b9bb4;width:38%;}}
+pre{{white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.10);
+  border-radius:12px;padding:12px;font-size:0.82rem;line-height:1.55;}}
+code{{color:#a5d8ff;font-size:0.85em;}}
+.top-entry-strip {{
+  display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;
+  margin-bottom:18px;padding:12px 16px;background:rgba(0,0,0,.28);
+  border-radius:12px;border:1px solid rgba(255,255,255,.1);
+}}
+.top-entry{{color:#a5b4fc;text-decoration:none;font-size:0.95rem;padding:6px 14px;border-radius:10px;border:1px solid transparent;}}
+.top-entry:hover{{background:rgba(255,255,255,.07);color:#fff;}}
+.top-entry-active{{color:#51cf66!important;font-weight:700;border-color:rgba(81,207,102,.45);background:rgba(81,207,102,.08);}}
+</style></head><body>
+{_HTML_BUILD_MARKER}
+{strip}
+<h1>风险真理层 Phase-1（observe-only）Web 预览</h1>
+<p class="muted">本页用于灰度前确认展示与字段；默认不进入主导航。数据与 <code>/decision</code> 同源。</p>
+<p class="muted" style="margin-top:-6px">短链别名：<code>/risk_phase1</code>（与 <code>/risk_truth_layer</code> 相同）</p>
+
+<div class="nav-strip">{nav_html}</div>
+
+<div class="card">
+<h2>主画像（main）</h2>
+{_risk_advisory_html(km, "main")}
+</div>
+
+<div class="card">
+<h2>实验轨画像（experiment）</h2>
+{_risk_advisory_html(km, "experiment")}
+</div>
+
+<div class="card">
+<h2>老师轨画像（teacher_boost / teacher_combat）</h2>
+<p class="muted" style="margin-top:0">两轨若数值相同，表示 Phase-1 仍共用同一套资金真值输入（文件源）；后续若要分账再单独立项。</p>
+{_risk_advisory_html(km, "teacher_boost")}
+{_risk_advisory_html(km, "teacher_combat")}
+</div>
+
+<div class="card">
+<h2>原始 JSON（便于你对照工单字段）</h2>
+<p class="muted"><code>risk_advisory</code></p>
+<pre>{html.escape(adv_json)}</pre>
+<p class="muted" style="margin-top:10px"><code>risk_advisory_bundle</code></p>
+<pre>{html.escape(bundle_json)}</pre>
+</div>
+
+<p class="muted">对照页：<a href="/decision?symbol={qsym}">打开正式决策页</a> · <a href="/api/version">/api/version</a></p>
+</body></html>"""
+    return HTMLResponse(content=body, headers=_HTML_NO_CACHE_HEADERS)
+
+
 @app.get("/live_state", response_class=HTMLResponse)
 def page_live_state():
     """实盘状态 JSON 单独页（与决策页摘要同源）。"""
@@ -2385,15 +2477,7 @@ def page_teacher_combat():
 
 if __name__ == "__main__":
     def _http_port() -> int:
-        """本地 HTTP 端口。
-
-        默认 **18080**：Phase-1 风险真理层 + Web / 决策页 / ``/api/version`` 验收（见
-        ``docs/RISK_TRUTH_LAYER_PHASE1.md``）。回测 / 快轨并行起第二套进程时用 **8080**，
-        通过 ``LONGXIA_HTTP_PORT=8080``（如 ``config/exp_fastlane_*.env``、
-        ``config/http_port_backtest.env``）覆盖，避免与 18080 主实例抢端口。
-
-        通用覆盖键：``LONGXIA_HTTP_PORT`` 或 ``PORT``（systemd/容器常用）。
-        """
+        """本地 HTTP 端口：默认 18080；可用 LONGXIA_HTTP_PORT 或 PORT 覆盖（systemd/容器常用）。"""
         for k in ("LONGXIA_HTTP_PORT", "PORT"):
             raw = str(os.environ.get(k, "")).strip()
             if not raw:
