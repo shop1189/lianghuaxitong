@@ -3,7 +3,7 @@
   "by_symbol": {
     "ETH/USDT": {
       "signals_today_seen": 135,
-      "last_virt_sig_key": "2026-04-21|ETH/USDT|无|0",
+      "last_virt_sig_key": "2026-04-21|ETH/USDT|偏多（强）|0",
       "signals_date": "2026-04-21"
     },
     "BTC/USDT": {
@@ -23,7 +23,7 @@
     },
     "BNB/USDT": {
       "signals_today_seen": 162,
-      "last_virt_sig_key": "2026-04-21|BNB/USDT|偏空（轻）|0",
+      "last_virt_sig_key": "2026-04-21|BNB/USDT|无|0",
       "signals_date": "2026-04-21"
     },
     "SOL/USDT": {

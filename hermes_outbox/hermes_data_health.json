@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-04-21T21:50:01Z",
+  "generated_at_utc": "2026-04-22T03:50:01Z",
   "availability_verdict": "可用于策略判断",
   "next_action": "保持 rsync 与文件更新节奏，下一健康检查周期复查即可。",
   "overall_status": "green",
@@ -10,8 +10,8 @@
     "trade_memory_json": {
       "ok": true,
       "error": null,
-      "records": 7600,
-      "last_record_time": "2026-04-22"
+      "records": 1057,
+      "last_record_time": "2026-04-12"
     },
     "backtest_result_csv": {
       "ok": true,
@@ -57,7 +57,7 @@
     },
     "project_memory_md": {
       "exists": true,
-      "mtime_iso": "2026-04-22T01:25:56"
+      "mtime_iso": "2026-04-12T17:18:34"
     },
     "daily_market_notes_md": {
       "exists": true,
