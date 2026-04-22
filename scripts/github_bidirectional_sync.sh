@@ -6,6 +6,7 @@
 # 环境变量：
 #   LONGXIA_GIT_BACKUP_COMMIT=1  若有未提交改动，先 git add -A 再提交（尊重 .gitignore），再拉推
 #   GIT_SYNC_AUTO_STASH=1        若仍无法快进（极少见），先 stash 再拉推再 pop
+#   LONGXIA_GIT_BLOCK_MISSING_MAX  自动提交前：若 `git ls-files -d` 缺失数超过该阈值则中止（默认 5；设 0 关闭）
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
@@ -32,7 +33,26 @@ _git_dirty() {
   [[ -n "$(git status --porcelain 2>/dev/null)" ]]
 }
 
+_abort_if_mass_worktree_loss() {
+  # 防止「磁盘上跟踪文件被批量删掉」时仍执行 git add -A 把删除提交进 main（致命）
+  local max="${LONGXIA_GIT_BLOCK_MISSING_MAX:-5}"
+  [[ "${max}" =~ ^[0-9]+$ ]] || max=5
+  if [[ "${max}" -eq 0 ]]; then
+    return 0
+  fi
+  local n
+  n="$(git ls-files -d 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ "${n}" -gt "${max}" ]]; then
+    {
+      echo "$(date -Is) ABORT auto-commit: ${n} tracked files missing from disk (git ls-files -d); max=${max}"
+      echo "Run: git status && git restore --source=HEAD -- .   (或从备份/tag 恢复)"
+    } | tee -a "$REPO/logs/github_sync.log" >&2
+    exit 1
+  fi
+}
+
 if _git_dirty && [[ "$COMMIT_MODE" == "1" ]]; then
+  _abort_if_mass_worktree_loss
   git add -A
   if ! git diff --cached --quiet 2>/dev/null; then
     git commit -m "chore(backup): auto sync $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
