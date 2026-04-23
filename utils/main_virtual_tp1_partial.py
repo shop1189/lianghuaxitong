@@ -76,8 +76,6 @@ def try_apply_main_virtual_tp1_partial(
     """
     if not main_virtual_tp1_partial_enabled():
         return False
-    if r.get("scaled_mode"):
-        return False
     if r.get("profit") is not None:
         return False
 

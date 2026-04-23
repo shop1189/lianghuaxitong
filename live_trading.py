@@ -39,6 +39,8 @@ V3.18.0：在 V3.17 基线上增加主观察池结构风控可开关、导航与
   LONGXIA_MAIN_EMA_CHASE_GUARD         相对 EMA21 追价过远时降级（0 关，默认）
   LONGXIA_MAIN_VIRTUAL_SL_COOLDOWN_GUARD  主观察池虚拟单同向 SL 后冷却（0 关，默认）
   LONGXIA_MAIN_VIRTUAL_SL_COOLDOWN_SEC  冷却秒数，默认 2700（45 分钟）
+  LONGXIA_MAIN_POOL_QUALITY_GUARD  主观察池样本质量门（默认 1；仅降噪控换手，不改核心交易数学逻辑）
+  LONGXIA_MAIN_POOL_GUARD_SYMBOLS / MAIN_POOL_REQUIRE_STRONG / MAIN_POOL_MIN_SCORE_ABS / MAIN_POOL_BAD_HOURS_UTC  质量门细项（默认全币种 + 强信号 + 分数下限 + 时段降权）
   LONGXIA_EXPERIMENT_CLASSIC_SCORE_BONUS  B 组经典规则对 score 的最大加分，默认 0.08（预留，未接逻辑时无影响）
   LONGXIA_MAIN_BREAKOUT_LOOKBACK_BARS   机械突破区间回看 K 线数（不含当前根），默认 48
   LONGXIA_MAIN_BREAKOUT_BUFFER_PCT      突破确认缓冲（百分比），默认 0.08
@@ -475,6 +477,13 @@ def _sync_virtual_closeouts_for_price(
                         continue
             except Exception:
                 pass
+        if try_apply_main_virtual_tp1_partial(r, float(price), close_iso):
+            changed = True
+            if r.get("profit") is not None and str(r.get("close_reason") or "") == "SL":
+                register_virtual_sl_cooldown(
+                    _REPO_ROOT, sym_f, str(r.get("direction") or "")
+                )
+            continue
         if scaled_on and r.get("scaled_mode"):
             res = try_scaled_virtual_close(r, float(price), close_iso)
             if res is not None:
@@ -487,13 +496,6 @@ def _sync_virtual_closeouts_for_price(
                 changed = True
                 if runner is not None:
                     data.append(runner)
-            continue
-        if try_apply_main_virtual_tp1_partial(r, float(price), close_iso):
-            changed = True
-            if r.get("profit") is not None and str(r.get("close_reason") or "") == "SL":
-                register_virtual_sl_cooldown(
-                    _REPO_ROOT, sym_f, str(r.get("direction") or "")
-                )
             continue
         hit = first_exit_tick(direction, entry, sl, tp1, tp2, tp3, float(price))
         if hit is None:
@@ -1237,6 +1239,8 @@ def sync_experiment_track_from_snapshot(
     extra_meta: Dict[str, Any] = {
         "markov_template": mk_tpl,
         "experiment_markov_template_enabled": tpl_en,
+        "regime": str(km.get("experiment_kronos_regime") or ""),
+        "markov_regime_line": str(km.get("markov_regime_line") or ""),
     }
     extra_meta.update(fib_meta)
     mode = _experiment_mode_normalized()
@@ -1295,7 +1299,12 @@ def _start_background_scan_thread_if_needed() -> None:
 
 
 def _append_virtual_trade_memory_local(
-    symbol: str, entry: float, direction_label: str, last_sig: int
+    symbol: str,
+    entry: float,
+    direction_label: str,
+    last_sig: int,
+    *,
+    decision: Optional[Dict[str, Any]] = None,
 ) -> None:
     today = datetime.now(_BJ).strftime("%Y-%m-%d")
     entry = float(entry)
@@ -1336,6 +1345,16 @@ def _append_virtual_trade_memory_local(
         "symbol": symbol,
         "last_sig": last_sig,
     }
+    if decision is not None:
+        regime = str(decision.get("experiment_kronos_regime") or "").strip()
+        markov_line = str(decision.get("markov_regime_line") or "").strip()
+        tpl = str(decision.get("markov_template") or "").strip()
+        if regime:
+            rec["regime"] = regime
+        if markov_line:
+            rec["markov_regime_line"] = markov_line
+        if tpl:
+            rec["markov_template"] = tpl
     if scaled_exit_enabled() and not main_virtual_tp1_partial_enabled():
         rec["scaled_mode"] = True
         rec["scaled_stage"] = 0
@@ -1352,6 +1371,49 @@ def _append_virtual_trade_memory_local(
     data.append(rec)
     _trade_memory_write(data, env)
     _reload_evolution_memory_from_disk()
+
+
+def _main_pool_quality_gate(
+    symbol: str, sig_label: str, decision: Optional[Dict[str, Any]]
+) -> Tuple[bool, str]:
+    """主观察池降噪门：仅做样本质量控制，不改核心交易数学逻辑。"""
+    on = os.environ.get("LONGXIA_MAIN_POOL_QUALITY_GUARD", "1").strip().lower()
+    if on in ("0", "false", "no", "off"):
+        return False, ""
+    symbols_raw = os.environ.get("LONGXIA_MAIN_POOL_GUARD_SYMBOLS", "").strip()
+    if symbols_raw:
+        targets = {s.strip() for s in symbols_raw.split(",") if s.strip()}
+    else:
+        # 默认覆盖主观察池全币种；若需局部放行再显式配置 LONGXIA_MAIN_POOL_GUARD_SYMBOLS。
+        targets = {str(s).strip() for s in _EXPERIMENT_SCAN_SYMBOLS if str(s).strip()}
+    if symbol not in targets:
+        return False, ""
+    if os.environ.get(
+        "LONGXIA_MAIN_POOL_REQUIRE_STRONG", "1"
+    ).strip().lower() not in ("0", "false", "no", "off"):
+        if not (
+            sig_label.startswith("偏多（强）") or sig_label.startswith("偏空（强）")
+        ):
+            return True, "quality_guard:require_strong_signal"
+    if decision is not None:
+        min_abs = float(os.environ.get("LONGXIA_MAIN_POOL_MIN_SCORE_ABS", "0.55"))
+        try:
+            cs = abs(float(decision.get("consistency_score") or 0.0))
+        except Exception:
+            cs = 0.0
+        if cs < min_abs:
+            return True, f"quality_guard:score<{min_abs}"
+    bad_hours_raw = os.environ.get(
+        "LONGXIA_MAIN_POOL_BAD_HOURS_UTC", "03,07,15,20,21"
+    )
+    bad_hours = {
+        int(x.strip())
+        for x in bad_hours_raw.split(",")
+        if x.strip().isdigit() and 0 <= int(x.strip()) <= 23
+    }
+    if datetime.now(timezone.utc).hour in bad_hours:
+        return True, "quality_guard:bad_hour_utc"
+    return False, ""
 def _resource_line() -> str:
     try:
         import psutil
@@ -1971,6 +2033,11 @@ def sync_virtual_memos_from_state(
     vdir = _dir_from_sig(sig_label)
     vblocked = virtual_open_blocked(_REPO_ROOT, symbol, vdir)
     sg_blocked = False
+    qg_blocked, qg_reason = _main_pool_quality_gate(symbol, sig_label, decision)
+    if qg_blocked:
+        sym_hook["quality_gate_block_reason"] = qg_reason
+    else:
+        sym_hook["quality_gate_block_reason"] = ""
     if decision is not None and vdir in ("做多", "做空"):
         try:
             from utils.structure_guard import block_trend_chase_entry
@@ -1982,7 +2049,7 @@ def sync_virtual_memos_from_state(
                 sg_blocked = True
         except Exception:
             pass
-    if n > prev and not vblocked and not sg_blocked:
+    if n > prev and not vblocked and not sg_blocked and not qg_blocked:
         delta = n - prev
         cap = _virtual_memos_max_catchup()
         if delta > cap:
@@ -1991,15 +2058,20 @@ def sync_virtual_memos_from_state(
             pass
         else:
             for _ in range(delta):
-                _append_virtual_trade_memory_local(symbol, ep, vdir, last_sig)
+                _append_virtual_trade_memory_local(
+                    symbol, ep, vdir, last_sig, decision=decision
+                )
     if (
         sig_label != "无"
         and sym_hook.get("last_virt_sig_key") != virt_key
         and not vblocked
         and not sg_blocked
+        and not qg_blocked
     ):
         if n <= prev:
-            _append_virtual_trade_memory_local(symbol, ep, vdir, last_sig)
+            _append_virtual_trade_memory_local(
+                symbol, ep, vdir, last_sig, decision=decision
+            )
     sym_hook["signals_today_seen"] = n
     sym_hook["last_virt_sig_key"] = virt_key
     _MEMOS_HOOK.write_text(json.dumps(hook, ensure_ascii=False, indent=2), encoding="utf-8")

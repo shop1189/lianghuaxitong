@@ -238,6 +238,8 @@ class TradeMemory:
         for k in (
             "levels_source",
             "markov_template",
+            "regime",
+            "markov_regime_line",
             "experiment_markov_template_enabled",
             "fib_0_618",
             "fib_1_618_up",

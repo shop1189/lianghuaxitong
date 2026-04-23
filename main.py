@@ -30,6 +30,7 @@ _load_main_dotenv()
 import os
 import html
 import json
+from collections import defaultdict
 from typing import Any, List, Optional
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -341,6 +342,86 @@ def _load_trades_flat() -> list[dict]:
         return []
     rows, _ = _trade_memory_parse(raw)
     return [r for r in rows if isinstance(r, dict)]
+
+
+def _main_pool_regime_close_symbol_pivot_html(limit: int = 45) -> str:
+    """主观察池已平仓样本：regime × close_reason × symbol 透视（只读，不改交易逻辑）。"""
+    rows = _load_trades_flat()
+    closed: list[dict] = []
+    for r in rows:
+        if r.get("virtual_signal") is not True:
+            continue
+        if r.get("profit") is None:
+            continue
+        ct = str(r.get("close_time") or "")
+        if not ct or ct == "—":
+            continue
+        closed.append(r)
+    if not closed:
+        return '<p class="muted">暂无已平仓主观察池样本。</p>'
+    agg: dict[tuple[str, str, str], dict[str, float]] = defaultdict(
+        lambda: {"n": 0.0, "sum": 0.0}
+    )
+    for r in closed:
+        reg = str(r.get("regime") or "unknown").strip() or "unknown"
+        cr = str(r.get("close_reason") or "UNKNOWN").strip() or "UNKNOWN"
+        sym = str(r.get("symbol") or "UNKNOWN").strip() or "UNKNOWN"
+        try:
+            p = float(r.get("profit"))
+        except Exception:
+            continue
+        key = (reg, cr, sym)
+        agg[key]["n"] += 1.0
+        agg[key]["sum"] += p
+    ranked: list[tuple[float, float, str, str, str]] = []
+    for (reg, cr, sym), v in agg.items():
+        ranked.append((float(v["sum"]), float(v["n"]), reg, cr, sym))
+    ranked.sort(key=lambda x: x[0])
+    ranked = ranked[:limit]
+    lines: list[str] = []
+    for sm, n, reg, cr, sym in ranked:
+        lines.append(
+            "<tr>"
+            f"<td>{html.escape(reg)}</td>"
+            f"<td>{html.escape(cr)}</td>"
+            f"<td>{html.escape(sym)}</td>"
+            f"<td>{int(n)}</td>"
+            f"<td>{_fmt_pct(sm, 2)}</td>"
+            "</tr>"
+        )
+    cmd = (
+        "python3 - <<'PY'\n"
+        "import json\nfrom pathlib import Path\nfrom collections import defaultdict\n"
+        "obj=json.loads(Path('trade_memory.json').read_text(encoding='utf-8'))\n"
+        "rows=obj.get('trades', obj) if isinstance(obj, dict) else obj\n"
+        "agg=defaultdict(lambda:{'n':0,'s':0.0})\n"
+        "for r in rows:\n"
+        "    if not isinstance(r, dict) or r.get('virtual_signal') is not True:\n"
+        "        continue\n"
+        "    if r.get('profit') is None:\n"
+        "        continue\n"
+        "    ct=str(r.get('close_time') or '')\n"
+        "    if not ct or ct=='—':\n"
+        "        continue\n"
+        "    k=(str(r.get('regime') or 'unknown'), str(r.get('close_reason') or 'UNKNOWN'), str(r.get('symbol') or 'UNKNOWN'))\n"
+        "    agg[k]['n']+=1\n"
+        "    agg[k]['s']+=float(r['profit'])\n"
+        "for (reg, cr, sym), v in sorted(agg.items(), key=lambda kv: kv[1]['s'])[:40]:\n"
+        "    print(reg, cr, sym, v['n'], round(v['s'], 4))\n"
+        "PY"
+    )
+    meta = (
+        f'<p class="muted">已平仓主观察池：<b>{len(closed)}</b>；透视组合数：<b>{len(agg)}</b>；'
+        f"表内展示 <b>净合计%</b> 最差前 <b>{len(ranked)}</b> 组（<code>regime × close_reason × symbol</code>）。"
+        " 历史无细分 regime 的样本为 <code>unknown</code>；<b>重启服务后</b>新开/新平仓会逐步写入真实 <code>regime</code>。</p>"
+    )
+    table = (
+        '<table class="data-table dense"><thead><tr>'
+        "<th>regime</th><th>平仓原因</th><th>symbol</th><th>笔数</th><th>净合计%</th>"
+        f'</tr></thead><tbody>{"".join(lines)}</tbody></table>'
+    )
+    tmpl = f'<pre class="muted" style="font-size:0.7rem;line-height:1.35">{html.escape(cmd)}</pre>'
+    return meta + table + tmpl
 
 
 def _experiment_open_rows_today(today_bj: str) -> list[dict]:
@@ -1969,6 +2050,7 @@ async def page_decision(symbol: str = Query("SOL/USDT")):
         if _scaled_on
         else "未开启（默认）：虚拟单整笔平仓（first_exit_tick）。"
     )
+    pivot_main_pool_html = _main_pool_regime_close_symbol_pivot_html()
 
     body = f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"/>
@@ -2151,6 +2233,11 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <div class="card">
 <h2>资金/仓位/杠杆基础层（observe）</h2>
 {_risk_advisory_html(km, "main")}
+</div>
+
+<div class="card">
+<h2>主观察池样本透视（regime × 平仓原因 × 币）</h2>
+{pivot_main_pool_html}
 </div>
 
 <div class="card">
