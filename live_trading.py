@@ -1701,6 +1701,13 @@ def _breakout_trigger_state(
 def get_v313_decision_snapshot(
     force_refresh: bool = True, symbol: str = "SOL/USDT"
 ) -> Dict[str, Any]:
+    # 兼容误用：历史上参数顺序为 (force_refresh, symbol)，若把交易对字符串当作第一个位置参数传入，
+    # 会被绑定到 force_refresh（bool），导致始终用默认 SOL/USDT 计算 —— 排障时极易误判。
+    if isinstance(force_refresh, str):
+        sym_mis = str(force_refresh).strip()
+        if "/" in sym_mis and sym_mis.upper() != "TRUE":
+            symbol = sym_mis
+        force_refresh = True
     _ensure_memos_hotfixes()
     ensure_trading_theory_library()
     snap = build_indicator_snapshot(symbol, 500)
