@@ -6,6 +6,7 @@ V3.18.0：在 V3.17 基线上增加主观察池结构风控可开关、导航与
 环境变量速查（规则实验轨 / Kronos-light 强化，重启进程生效）：
   LONGXIA_EXPERIMENT_TRACK     关：0|false|no|off；默认开启
   LONGXIA_EXPERIMENT_MODE      kronos_light（默认）| legacy | kronos_model（未接真模型时同 light）
+  LONGXIA_EXPERIMENT_REQUIRE_STRONG  kronos_light 是否仅允许「偏多（强）/偏空（强）」；默认 0（放宽到偏多/偏空也可过）
   LONGXIA_KRONOS_MIN_PROB_EDGE     kronos_light：涨跌概率差阈值（百分点），默认 5（易恢复样本；可再收紧）
   LONGXIA_EXPERIMENT_TREND_EDGE     trend 态概率差上限（与 base+extra 取 min），默认 12
   LONGXIA_EXPERIMENT_MIN_SCORE_ABS   kronos_light：|consistency_score| 下限，默认 0.45
@@ -1079,10 +1080,17 @@ def _experiment_entry_filter_legacy(km: Dict[str, Any]) -> bool:
 def _experiment_entry_filter_kronos_light(km: Dict[str, Any]) -> bool:
     """Kronos-light：仅强多/强空；概率差、consistency、Gate+裸K、MTF+ATR、regime 调阈值（依赖快照 experiment_*）。"""
     sig = str(km.get("signal_label") or "")
-    if not (sig.startswith("偏多（强）") or sig.startswith("偏空（强）")):
-        return False
+    require_strong = os.environ.get(
+        "LONGXIA_EXPERIMENT_REQUIRE_STRONG", "0"
+    ).strip().lower() in ("1", "true", "yes", "on")
+    if require_strong:
+        if not (sig.startswith("偏多（强）") or sig.startswith("偏空（强）")):
+            return False
+    else:
+        if not (sig.startswith("偏多") or sig.startswith("偏空")):
+            return False
     regime = str(km.get("experiment_kronos_regime") or "mid")
-    edge_base = float(os.environ.get("LONGXIA_KRONOS_MIN_PROB_EDGE", "5"))
+    edge_base = float(os.environ.get("LONGXIA_KRONOS_MIN_PROB_EDGE", "3"))
     edge_chop = float(os.environ.get("LONGXIA_EXPERIMENT_EDGE_CHOP_EXTRA", "3"))
     edge_mid = float(os.environ.get("LONGXIA_EXPERIMENT_EDGE_MID_EXTRA", "0"))
     extra = edge_chop if regime == "chop" else (edge_mid if regime == "mid" else 0.0)
@@ -1095,7 +1103,7 @@ def _experiment_entry_filter_kronos_light(km: Dict[str, Any]) -> bool:
         if regime == "trend":
             trend_cap = float(os.environ.get("LONGXIA_EXPERIMENT_TREND_EDGE", "12"))
             need_edge = min(need_edge, trend_cap)
-        score_floor0 = float(os.environ.get("LONGXIA_EXPERIMENT_MIN_SCORE_ABS", "0.45"))
+        score_floor0 = float(os.environ.get("LONGXIA_EXPERIMENT_MIN_SCORE_ABS", "0.35"))
         s_chop = float(os.environ.get("LONGXIA_EXPERIMENT_SCORE_CHOP_FLOOR", "0.68"))
         s_mid = float(os.environ.get("LONGXIA_EXPERIMENT_SCORE_MID_FLOOR", "0.45"))
         score_floor = score_floor0
@@ -1468,9 +1476,9 @@ def experiment_km_for_bar(
     experiment_kronos_pattern_ok = has_engulfing_or_key_pattern(
         klines
     ) or last_bar_wick_dominant(klines, wick_body_ratio=wick_ratio)
-    gate_dev = float(os.environ.get("LONGXIA_EXPERIMENT_GATE_RSI_DEV", "12"))
+    gate_dev = float(os.environ.get("LONGXIA_EXPERIMENT_GATE_RSI_DEV", "8"))
     experiment_kronos_gate_ok = gate_deviation_ok(rsi_1m, sig_label, min_dev=gate_dev)
-    atr_min_pct = float(os.environ.get("LONGXIA_EXPERIMENT_ATR_MIN_PCT", "0.05"))
+    atr_min_pct = float(os.environ.get("LONGXIA_EXPERIMENT_ATR_MIN_PCT", "0.03"))
     experiment_atr_vol_ok = experiment_atr_pct >= atr_min_pct
 
     tpl = (markov_template or os.environ.get("LONGXIA_MARKOV_TEMPLATE", "off")).strip().lower()
