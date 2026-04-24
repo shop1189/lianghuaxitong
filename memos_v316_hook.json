@@ -9,9 +9,9 @@
     },
     "BTC/USDT": {
       "signals_today_seen": 175,
-      "last_virt_sig_key": "2026-04-21|BTC/USDT|无|0",
+      "last_virt_sig_key": "2026-04-21|BTC/USDT|偏空（强）|0",
       "signals_date": "2026-04-21",
-      "quality_gate_block_reason": "quality_guard:require_strong_signal"
+      "quality_gate_block_reason": "quality_guard:bad_hour_utc"
     },
     "DOGE/USDT": {
       "signals_today_seen": 153,
@@ -21,9 +21,9 @@
     },
     "XRP/USDT": {
       "signals_today_seen": 159,
-      "last_virt_sig_key": "2026-04-21|XRP/USDT|无|0",
+      "last_virt_sig_key": "2026-04-21|XRP/USDT|偏空（强）|0",
       "signals_date": "2026-04-21",
-      "quality_gate_block_reason": "quality_guard:require_strong_signal"
+      "quality_gate_block_reason": "quality_guard:score<0.55"
     },
     "BNB/USDT": {
       "signals_today_seen": 162,
@@ -33,7 +33,7 @@
     },
     "SOL/USDT": {
       "signals_today_seen": 146,
-      "last_virt_sig_key": "2026-04-21|SOL/USDT|偏多（轻）|1",
+      "last_virt_sig_key": "2026-04-21|SOL/USDT|无|1",
       "signals_date": "2026-04-21",
       "quality_gate_block_reason": "quality_guard:require_strong_signal"
     }
