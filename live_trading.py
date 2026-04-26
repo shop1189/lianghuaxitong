@@ -1717,6 +1717,8 @@ def get_v313_decision_snapshot(
     _ensure_memos_hotfixes()
     ensure_trading_theory_library()
     snap = build_indicator_snapshot(symbol, 500)
+    bn_ctx_for_merge: Optional[Dict[str, Any]] = None
+    bn_score_nudge_meta: Dict[str, Any] = {}
     klines: List[Dict[str, Any]] = snap.get("klines") or []
     state = _state_slice_for_symbol(_load_state(), symbol)
     closes = [float(k["close"]) for k in klines]
@@ -1777,6 +1779,34 @@ def get_v313_decision_snapshot(
     if t5 == "下跌":
         score -= 0.05
     score = max(-1.0, min(1.0, score))
+    if os.environ.get("LONGXIA_BINANCE_SCORE_ENABLE", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        try:
+            from data.binance_reference import (
+                apply_binance_perp_score_nudge,
+                get_binance_context_for_ccxt_symbol,
+            )
+
+            bn_ctx_for_merge = get_binance_context_for_ccxt_symbol(symbol)
+            raw_age = float((bn_ctx_for_merge.get("raw") or {}).get("age_sec", 999))
+            pnl = bn_ctx_for_merge.get("panel") or {}
+            if raw_age < 180.0 and str(pnl.get("binance_symbol") or "").strip() not in (
+                "",
+                "—",
+            ):
+                score, bn_score_nudge_meta = apply_binance_perp_score_nudge(score, pnl)
+                score = max(-1.0, min(1.0, score))
+                notes = bn_score_nudge_meta.get("notes") or []
+                if notes:
+                    technical_indicators = technical_indicators + " | 币安永续微调：" + "；".join(
+                        notes
+                    )
+        except Exception:
+            pass
     post = beta_update_from_score_throttled(score)
     sig_label = _sig_label_from_rsi_t5(rsi_1m, t5)
     if score >= 0.45 and sig_label.startswith("偏多"):
@@ -1936,7 +1966,9 @@ def get_v313_decision_snapshot(
     try:
         from data.binance_reference import get_binance_context_for_ccxt_symbol
 
-        bn_ctx = get_binance_context_for_ccxt_symbol(symbol)
+        if bn_ctx_for_merge is None:
+            bn_ctx_for_merge = get_binance_context_for_ccxt_symbol(symbol)
+        bn_ctx = bn_ctx_for_merge or {}
         suf = str(bn_ctx.get("trend_suffix") or "").strip()
         if suf:
             trend_status = trend_status + suf
@@ -2002,6 +2034,7 @@ def get_v313_decision_snapshot(
         "risk_advisory_bundle": risk_advisory_bundle,
         "binance_reference": bn_panel,
         "binance_reference_raw": bn_raw,
+        "binance_score_nudge": bn_score_nudge_meta,
         **ekm,
         **brain_meta,
     }

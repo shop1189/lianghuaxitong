@@ -2234,6 +2234,7 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <tr><td>决策说明 · 技术</td><td>{html.escape(_zh_decision_copy(km.get("technical_indicators")))}</td></tr>
 <tr><td>决策说明 · 概率</td><td>{html.escape(_zh_decision_copy(km.get("prob_model_line")))}</td></tr>
 <tr><td>能力引擎 · 一致性评分</td><td>{html.escape(str(km.get("consistency_score", "—")))}</td></tr>
+<tr><td>能力引擎 · 币安永续微调（已并入一致性分）</td><td>{html.escape(json_dumps_safe(km.get("binance_score_nudge") or {}))}</td></tr>
 <tr><td>能力引擎 · 贝叶斯后验胜率</td><td>{html.escape(str(km.get("bayes_posterior_winrate", "—")))}</td></tr>
 <tr><td>能力引擎 · RSI(1m)</td><td>{html.escape(str(km.get("rsi_1m", "—")))}</td></tr>
 <tr><td>能力引擎 · 形态识别（条数）</td><td>{html.escape(str(len(km.get("pattern_list") or [])))} 条</td></tr>

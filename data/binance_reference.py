@@ -9,10 +9,11 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from collections import defaultdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -189,6 +190,11 @@ def get_binance_context_for_ccxt_symbol(ccxt_symbol: str) -> Dict[str, Any]:
     bp = _basis_pct(mark, idx)
     panel["basis_mark_vs_index_pct"] = f"{bp:.4f}%" if bp is not None else "—"
     panel["open_interest"] = str(oi_v) if oi_v is not None else "—"
+    try:
+        panel["funding_rate_dec"] = float(fr) if fr is not None and str(fr).strip() != "" else None
+    except (TypeError, ValueError):
+        panel["funding_rate_dec"] = None
+    panel["basis_pct_val"] = bp
 
     liq_n = int((liq.get("by_symbol") or {}).get(bn_sym) or 0)
     panel["liq_hits_in_sample"] = liq_n
@@ -214,6 +220,70 @@ def get_binance_context_for_ccxt_symbol(ccxt_symbol: str) -> Dict[str, Any]:
         "panel": panel,
         "raw": {"per_symbol_row": row, "liq": liq, "age_sec": age},
     }
+
+
+def apply_binance_perp_score_nudge(
+    score: float, panel: Dict[str, Any]
+) -> Tuple[float, Dict[str, Any]]:
+    """
+    在 Gate 1m 聚合分之外，用币安永续公开字段做小幅修正（默认开，可用 LONGXIA_BINANCE_SCORE_ENABLE=0 关闭）。
+
+    设计原则：单条幅度小、总修正有上限，避免与现有 RSI/MTF 主逻辑打架。
+    """
+    meta: Dict[str, Any] = {"notes": [], "delta_total": 0.0}
+    if not panel or str(panel.get("binance_symbol") or "") in ("", "—"):
+        return score, meta
+    if os.environ.get("LONGXIA_BINANCE_SCORE_ENABLE", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return score, meta
+
+    fr = panel.get("funding_rate_dec")
+    bp = panel.get("basis_pct_val")
+    liq_n = int(panel.get("liq_hits_in_sample") or 0)
+    liq_ok = not panel.get("liq_error")
+
+    th_fr = float(os.environ.get("LONGXIA_BINANCE_FUNDING_THRESH", "0.00035"))
+    d_fr = float(os.environ.get("LONGXIA_BINANCE_FUNDING_DELTA", "0.028"))
+    th_bp = float(os.environ.get("LONGXIA_BINANCE_BASIS_THRESH_PCT", "0.10"))
+    d_bp = float(os.environ.get("LONGXIA_BINANCE_BASIS_DELTA", "0.022"))
+    liq_th = int(os.environ.get("LONGXIA_BINANCE_LIQ_THRESH", "5"))
+    d_liq_max = float(os.environ.get("LONGXIA_BINANCE_LIQ_DELTA_MAX", "0.035"))
+
+    delta = 0.0
+    if isinstance(fr, (int, float)):
+        fv = float(fr)
+        if fv > th_fr:
+            delta -= d_fr
+            meta["notes"].append(f"资金费率偏高→一致性分-{d_fr:.3f}")
+        elif fv < -th_fr:
+            delta += d_fr
+            meta["notes"].append(f"资金费率偏低→一致性分+{d_fr:.3f}")
+    if isinstance(bp, (int, float)):
+        bpv = float(bp)
+        if bpv > th_bp:
+            delta -= d_bp
+            meta["notes"].append(f"标记溢价>{th_bp}%→-{d_bp:.3f}")
+        elif bpv < -th_bp:
+            delta += d_bp
+            meta["notes"].append(f"标记折价<{-th_bp}%→+{d_bp:.3f}")
+    if liq_ok and liq_n >= liq_th:
+        damp = min(d_liq_max, 0.04 + 0.006 * float(liq_n - liq_th))
+        if score > 0:
+            delta -= damp
+            meta["notes"].append(f"近窗强平≥{liq_th}→收敛-{damp:.3f}")
+        elif score < 0:
+            delta += damp
+            meta["notes"].append(f"近窗强平≥{liq_th}→收敛+{damp:.3f}")
+
+    cap = float(os.environ.get("LONGXIA_BINANCE_SCORE_DELTA_CAP", "0.055"))
+    delta = max(-cap, min(cap, delta))
+    meta["delta_total"] = delta
+    out = max(-1.0, min(1.0, float(score) + delta))
+    return out, meta
 
 
 def binance_metrics_html_rows(ccxt_symbol: str) -> str:
