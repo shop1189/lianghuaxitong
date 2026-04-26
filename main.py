@@ -22,7 +22,16 @@ def _load_main_dotenv() -> None:
     env_name = os.environ.get("ENV_FILE", ".env.dev")
     sec = root / env_name if not env_name.startswith("/") else Path(env_name)
     if sec.is_file():
+        # 进程已显式传入的端口（如 systemd / nohup env）不应被 .env.dev 覆盖
+        _port_preserve = {
+            k: os.environ.get(k)
+            for k in ("PORT", "LONGXIA_HTTP_PORT")
+            if os.environ.get(k, "").strip()
+        }
         load_dotenv(sec, override=True)
+        for _k, _v in _port_preserve.items():
+            if _v:
+                os.environ[_k] = _v
 
 
 _load_main_dotenv()
@@ -2083,6 +2092,12 @@ async def page_decision(symbol: str = Query("SOL/USDT")):
         binance_metrics_rows = binance_metrics_html_rows(sym)
     except Exception:
         binance_metrics_rows = ""
+    try:
+        from data.third_party_reference import third_party_metrics_html_rows
+
+        third_party_metrics_rows = third_party_metrics_html_rows(sym)
+    except Exception:
+        third_party_metrics_rows = ""
 
     body = f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"/>
@@ -2258,6 +2273,7 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <tr><td>数据新鲜度 · Gate 现货 ticker 报价时间（北京）</td><td>{html.escape(ticker_quote_bj)}</td></tr>
 <tr><td>K 线拉取实现</td><td>{html.escape(klines_impl_line)}</td></tr>
 {binance_metrics_rows}
+{third_party_metrics_rows}
 </table></div>
 
 <div class="card green">

@@ -1704,6 +1704,16 @@ def _breakout_trigger_state(
     return out
 
 
+def _third_party_snapshot(sym: str) -> Dict[str, Any]:
+    """Coinglass / CryptoQuant / LunarCrush / 币安&Gate 签名接口摘要（失败不抛）。"""
+    try:
+        from data.third_party_reference import get_third_party_cached
+
+        return {"third_party_reference": get_third_party_cached(sym)}
+    except Exception:
+        return {"third_party_reference": {}}
+
+
 def get_v313_decision_snapshot(
     force_refresh: bool = True, symbol: str = "SOL/USDT"
 ) -> Dict[str, Any]:
@@ -2035,6 +2045,7 @@ def get_v313_decision_snapshot(
         "binance_reference": bn_panel,
         "binance_reference_raw": bn_raw,
         "binance_score_nudge": bn_score_nudge_meta,
+        **(_third_party_snapshot(symbol)),
         **ekm,
         **brain_meta,
     }
