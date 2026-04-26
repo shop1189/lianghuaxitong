@@ -277,12 +277,16 @@ def _result_cn(r: dict) -> str:
     if r.get("profit") is None:
         return "未平"
     cr = _resolved_close_bracket(r)
+    raw_cr = str(r.get("close_reason") or "").strip().lower()
     if cr in ("TP1", "TP2", "TP3"):
         return f"止盈·{cr}"
     if cr == "BE":
         return "保本·BE"
     if cr == "SL":
         return "止损·SL"
+    # 结构风控提前离场（close_reason 常见为 structure_exit:...）
+    if raw_cr.startswith("structure_exit"):
+        return "提前离场·结构"
     return "—"
 
 
@@ -639,9 +643,8 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
         else "—"
     )
 
-    sum_gross_today = sum(float(r.get("profit") or 0) for r in vir_today_closed)
     sum_net_today = sum(_net_p(float(r.get("profit") or 0)) for r in vir_today_closed)
-    avg_g = sum_gross_today / len(vir_today_closed) if vir_today_closed else 0.0
+    avg_net_today = sum_net_today / len(vir_today_closed) if vir_today_closed else 0.0
     n_closed_today = len(vir_today_closed)
 
     # 平仓结构 & 分桶（主观察池·当日，与宽表「结果」列同一套档位解析）
@@ -681,8 +684,8 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
         )
 
     n_exp_closed_today = len(exp_today_closed)
-    sum_exp_gross_today = sum(float(r.get("profit") or 0) for r in exp_today_closed)
-    avg_e = sum_exp_gross_today / n_exp_closed_today if n_exp_closed_today else 0.0
+    sum_exp_net_today = sum(_net_p(float(r.get("profit") or 0)) for r in exp_today_closed)
+    avg_exp_net_today = sum_exp_net_today / n_exp_closed_today if n_exp_closed_today else 0.0
 
     ebuckets: dict[str, list[dict]] = {"TP1": [], "TP2": [], "TP3": [], "SL": []}
     for r in exp_today_closed:
@@ -737,7 +740,7 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
 <tr><td>今日赢 / 亏（净·已扣双边手续费）</td><td>{len([r for r in exp_today_closed if _net_p(float(r.get('profit') or 0)) > 0])} / {len([r for r in exp_today_closed if _net_p(float(r.get('profit') or 0)) <= 0])}</td></tr>
 <tr><td>今日胜率（净）</td><td>{et_net_wr if exp_today_closed else '—'}</td></tr>
 <tr><td>辨别提示（毛/净胜率）</td><td>{html.escape(ehint) if ehint else '—'}</td></tr>
-<tr><td>今日总盈亏%（平均单笔 · 合计百分点）</td><td>平均单笔 {avg_e:.4f}% · 合计百分点 {sum_exp_gross_today:.4f}%（每笔已扣双边合计 {_MEMOS_FEE_PCT}%）</td></tr>
+<tr><td>今日总盈亏%（平均单笔 · 合计百分点）</td><td>平均单笔 {avg_exp_net_today:.4f}% · 合计百分点 {sum_exp_net_today:.4f}%（每笔已扣双边合计 {_MEMOS_FEE_PCT}%）</td></tr>
 <tr><td>今日·平仓结构（笔数 / 占比 / 均毛%）</td><td>{_ebucket_line('TP1', ebuckets['TP1'])}；{_ebucket_line('TP2', ebuckets['TP2'])}；{_ebucket_line('TP3', ebuckets['TP3'])}；{_ebucket_line('SL', ebuckets['SL'])}</td></tr>
 <tr><td>今日·毛盈亏分桶（占已平%）</td><td>
 毛≤0%：{egross_bin1} 笔（{egross_bin1/n_exp_closed_today*100 if n_exp_closed_today else 0:.1f}%）；
@@ -768,7 +771,7 @@ def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
 <tr><td>今日赢 / 亏（净·已扣双边手续费）</td><td>{len([r for r in vir_today_closed if _net_p(float(r.get('profit') or 0)) > 0])} / {len([r for r in vir_today_closed if _net_p(float(r.get('profit') or 0)) <= 0])}</td></tr>
 <tr><td>今日胜率（净）</td><td>{vt_net_wr if vir_today_closed else '—'}</td></tr>
 <tr><td>辨别提示（毛/净胜率）</td><td>{html.escape(hint) if hint else '—'}</td></tr>
-<tr><td>今日总盈亏%（平均单笔 · 合计百分点）</td><td>平均单笔 {avg_g:.4f}% · 合计百分点 {sum_gross_today:.4f}%（每笔已扣双边合计 {_MEMOS_FEE_PCT}%）</td></tr>
+<tr><td>今日总盈亏%（平均单笔 · 合计百分点）</td><td>平均单笔 {avg_net_today:.4f}% · 合计百分点 {sum_net_today:.4f}%（每笔已扣双边合计 {_MEMOS_FEE_PCT}%）</td></tr>
 <tr><td>今日·平仓结构（笔数 / 占比 / 均毛%）</td><td>{_bucket_line('TP1', buckets['TP1'])}；{_bucket_line('TP2', buckets['TP2'])}；{_bucket_line('TP3', buckets['TP3'])}；{_bucket_line('SL', buckets['SL'])}</td></tr>
 <tr><td>今日·毛盈亏分桶（占已平%）</td><td>
 毛≤0%：{gross_bin1} 笔（{gross_bin1/n_closed_today*100 if n_closed_today else 0:.1f}%）；
@@ -1482,13 +1485,36 @@ def _backtest_matrix_report_block() -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
+
     try:
         from live_trading import start_live_bot_background
 
         start_live_bot_background()
     except Exception as e:
         print(f"[warn] start_live_bot_background: {e}")
+    bn_task = None
+    try:
+        from data.binance_reference import refresh_binance_reference_cache
+
+        async def _binance_refresh_loop() -> None:
+            while True:
+                try:
+                    await asyncio.to_thread(refresh_binance_reference_cache)
+                except Exception as e:
+                    print(f"[warn] binance_reference refresh: {e}")
+                await asyncio.sleep(45)
+
+        bn_task = asyncio.create_task(_binance_refresh_loop())
+    except Exception as e:
+        print(f"[warn] binance_reference background: {e}")
     yield
+    if bn_task is not None:
+        bn_task.cancel()
+        try:
+            await bn_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="longxia_system", lifespan=lifespan)
@@ -2051,6 +2077,12 @@ async def page_decision(symbol: str = Query("SOL/USDT")):
         else "未开启（默认）：虚拟单整笔平仓（first_exit_tick）。"
     )
     pivot_main_pool_html = _main_pool_regime_close_symbol_pivot_html()
+    try:
+        from data.binance_reference import binance_metrics_html_rows
+
+        binance_metrics_rows = binance_metrics_html_rows(sym)
+    except Exception:
+        binance_metrics_rows = ""
 
     body = f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"/>
@@ -2224,6 +2256,7 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <tr><td>主观察池 · 分批止盈</td><td>{html.escape(memos_scaled_hint)}</td></tr>
 <tr><td>数据新鲜度 · Gate 现货 ticker 报价时间（北京）</td><td>{html.escape(ticker_quote_bj)}</td></tr>
 <tr><td>K 线拉取实现</td><td>{html.escape(klines_impl_line)}</td></tr>
+{binance_metrics_rows}
 </table></div>
 
 <div class="card green">

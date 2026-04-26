@@ -7,15 +7,16 @@ V3.18.0：在 V3.17 基线上增加主观察池结构风控可开关、导航与
   LONGXIA_EXPERIMENT_TRACK     关：0|false|no|off；默认开启
   LONGXIA_EXPERIMENT_MODE      kronos_light（默认）| legacy | kronos_model（未接真模型时同 light）
   LONGXIA_EXPERIMENT_REQUIRE_STRONG  kronos_light 是否仅允许「偏多（强）/偏空（强）」；默认 0（放宽到偏多/偏空也可过）
-  LONGXIA_KRONOS_MIN_PROB_EDGE     kronos_light：涨跌概率差阈值（百分点），默认 5（易恢复样本；可再收紧）
+  LONGXIA_KRONOS_MIN_PROB_EDGE     kronos_light：涨跌概率差阈值（百分点），默认 2（偏松：便于采样；线上可再收紧）
   LONGXIA_EXPERIMENT_TREND_EDGE     trend 态概率差上限（与 base+extra 取 min），默认 12
-  LONGXIA_EXPERIMENT_MIN_SCORE_ABS   kronos_light：|consistency_score| 下限，默认 0.45
-  LONGXIA_EXPERIMENT_EDGE_CHOP_EXTRA / LONGXIA_EXPERIMENT_EDGE_MID_EXTRA  chop/mid 态额外概率差，默认 3 / 0
-  LONGXIA_EXPERIMENT_SCORE_CHOP_FLOOR / SCORE_MID_FLOOR  chop/mid 态与 MIN_SCORE 取 max，默认 0.68 / 0.45
-  LONGXIA_EXPERIMENT_GATE_RSI_DEV    Gate：RSI 偏离 50 的幅度，默认 12
-  LONGXIA_EXPERIMENT_ATR_MIN_PCT     波动过低不做（ATR%/价），默认 0.05
+  LONGXIA_EXPERIMENT_MIN_SCORE_ABS   kronos_light：|consistency_score| 下限，默认 0.28
+  LONGXIA_EXPERIMENT_EDGE_CHOP_EXTRA / LONGXIA_EXPERIMENT_EDGE_MID_EXTRA  chop/mid 态额外概率差，默认 2 / 0
+  LONGXIA_EXPERIMENT_SCORE_CHOP_FLOOR / SCORE_MID_FLOOR  chop/mid 态与 MIN_SCORE 取 max，默认 0.52 / 0.32
+  LONGXIA_EXPERIMENT_GATE_RSI_DEV    Gate：RSI 偏离 50 的幅度，默认 6
+  LONGXIA_EXPERIMENT_ATR_MIN_PCT     波动过低不做（ATR%/价），默认 0.022
   LONGXIA_EXPERIMENT_TREND_ALLOW_NO_PATTERN  trend 态无裸 K 形态时仍可过（需 gate+mtf 已满足），默认开
   LONGXIA_EXPERIMENT_MID_ALLOW_NO_PATTERN  mid 态无裸 K 形态时仍可过（需 gate+mtf 已满足），默认开
+  LONGXIA_EXPERIMENT_CHOP_ALLOW_NO_PATTERN  chop 态无裸 K 形态时仍可过（需 gate+mtf+ATR 已满足），默认开（利于震荡市采样）
   LONGXIA_EXPERIMENT_ATR_CHOP_MAX / ATR_TREND_MIN  轻量 regime 分档
   LONGXIA_EXPERIMENT_WICK_BODY_RATIO  裸K影线/实体比，默认 0.6
   LONGXIA_EXPERIMENT_PAUSE_SEC       连亏 2 笔后暂停秒数，默认 900
@@ -1078,7 +1079,7 @@ def _experiment_entry_filter_legacy(km: Dict[str, Any]) -> bool:
 
 
 def _experiment_entry_filter_kronos_light(km: Dict[str, Any]) -> bool:
-    """Kronos-light：仅强多/强空；概率差、consistency、Gate+裸K、MTF+ATR、regime 调阈值（依赖快照 experiment_*）。"""
+    """Kronos-light：概率差、consistency、Gate+裸K、MTF+ATR、regime 调阈值（依赖快照 experiment_*）；强信号由 LONGXIA_EXPERIMENT_REQUIRE_STRONG 控制。"""
     sig = str(km.get("signal_label") or "")
     require_strong = os.environ.get(
         "LONGXIA_EXPERIMENT_REQUIRE_STRONG", "0"
@@ -1090,8 +1091,8 @@ def _experiment_entry_filter_kronos_light(km: Dict[str, Any]) -> bool:
         if not (sig.startswith("偏多") or sig.startswith("偏空")):
             return False
     regime = str(km.get("experiment_kronos_regime") or "mid")
-    edge_base = float(os.environ.get("LONGXIA_KRONOS_MIN_PROB_EDGE", "3"))
-    edge_chop = float(os.environ.get("LONGXIA_EXPERIMENT_EDGE_CHOP_EXTRA", "3"))
+    edge_base = float(os.environ.get("LONGXIA_KRONOS_MIN_PROB_EDGE", "2"))
+    edge_chop = float(os.environ.get("LONGXIA_EXPERIMENT_EDGE_CHOP_EXTRA", "2"))
     edge_mid = float(os.environ.get("LONGXIA_EXPERIMENT_EDGE_MID_EXTRA", "0"))
     extra = edge_chop if regime == "chop" else (edge_mid if regime == "mid" else 0.0)
     use_tpl = bool(km.get("experiment_markov_template_enabled"))
@@ -1103,9 +1104,9 @@ def _experiment_entry_filter_kronos_light(km: Dict[str, Any]) -> bool:
         if regime == "trend":
             trend_cap = float(os.environ.get("LONGXIA_EXPERIMENT_TREND_EDGE", "12"))
             need_edge = min(need_edge, trend_cap)
-        score_floor0 = float(os.environ.get("LONGXIA_EXPERIMENT_MIN_SCORE_ABS", "0.35"))
-        s_chop = float(os.environ.get("LONGXIA_EXPERIMENT_SCORE_CHOP_FLOOR", "0.68"))
-        s_mid = float(os.environ.get("LONGXIA_EXPERIMENT_SCORE_MID_FLOOR", "0.45"))
+        score_floor0 = float(os.environ.get("LONGXIA_EXPERIMENT_MIN_SCORE_ABS", "0.28"))
+        s_chop = float(os.environ.get("LONGXIA_EXPERIMENT_SCORE_CHOP_FLOOR", "0.52"))
+        s_mid = float(os.environ.get("LONGXIA_EXPERIMENT_SCORE_MID_FLOOR", "0.32"))
         score_floor = score_floor0
         if regime == "chop":
             score_floor = max(score_floor, s_chop)
@@ -1150,10 +1151,15 @@ def _experiment_entry_filter_kronos_light(km: Dict[str, Any]) -> bool:
     allow_mid_np = os.environ.get(
         "LONGXIA_EXPERIMENT_MID_ALLOW_NO_PATTERN", "1"
     ).strip().lower() not in ("0", "false", "no", "off")
+    allow_chop_np = os.environ.get(
+        "LONGXIA_EXPERIMENT_CHOP_ALLOW_NO_PATTERN", "1"
+    ).strip().lower() not in ("0", "false", "no", "off")
     if not pattern_ok:
         if regime == "trend" and allow_trend_np:
             pass
         elif regime == "mid" and allow_mid_np:
+            pass
+        elif regime == "chop" and allow_chop_np:
             pass
         else:
             return False
@@ -1476,9 +1482,9 @@ def experiment_km_for_bar(
     experiment_kronos_pattern_ok = has_engulfing_or_key_pattern(
         klines
     ) or last_bar_wick_dominant(klines, wick_body_ratio=wick_ratio)
-    gate_dev = float(os.environ.get("LONGXIA_EXPERIMENT_GATE_RSI_DEV", "8"))
+    gate_dev = float(os.environ.get("LONGXIA_EXPERIMENT_GATE_RSI_DEV", "6"))
     experiment_kronos_gate_ok = gate_deviation_ok(rsi_1m, sig_label, min_dev=gate_dev)
-    atr_min_pct = float(os.environ.get("LONGXIA_EXPERIMENT_ATR_MIN_PCT", "0.03"))
+    atr_min_pct = float(os.environ.get("LONGXIA_EXPERIMENT_ATR_MIN_PCT", "0.022"))
     experiment_atr_vol_ok = experiment_atr_pct >= atr_min_pct
 
     tpl = (markov_template or os.environ.get("LONGXIA_MARKOV_TEMPLATE", "off")).strip().lower()
@@ -1925,6 +1931,19 @@ def get_v313_decision_snapshot(
         stop=float(sl_price),
         atr_pct=atr_pct_for_risk,
     )
+    bn_panel: Dict[str, Any] = {}
+    bn_raw: Dict[str, Any] = {}
+    try:
+        from data.binance_reference import get_binance_context_for_ccxt_symbol
+
+        bn_ctx = get_binance_context_for_ccxt_symbol(symbol)
+        suf = str(bn_ctx.get("trend_suffix") or "").strip()
+        if suf:
+            trend_status = trend_status + suf
+        bn_panel = bn_ctx.get("panel") if isinstance(bn_ctx.get("panel"), dict) else {}
+        bn_raw = bn_ctx.get("raw") if isinstance(bn_ctx.get("raw"), dict) else {}
+    except Exception:
+        pass
     return {
         "symbol": symbol,
         "prediction_cycle": "下一根 5 分钟 K线",
@@ -1981,6 +2000,8 @@ def get_v313_decision_snapshot(
         "theory_book_hints_text": theory_book_hints_text,
         "risk_advisory": risk_advisory,
         "risk_advisory_bundle": risk_advisory_bundle,
+        "binance_reference": bn_panel,
+        "binance_reference_raw": bn_raw,
         **ekm,
         **brain_meta,
     }
