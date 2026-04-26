@@ -1,42 +1,43 @@
-# Secrets（勿提交）
+# Secrets — never commit
 .env
 .env.*
 !.env.example
+*.pem
+*_secret*
+*_SECRET*
 
 # Python
-venv/
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
 *.egg-info/
-.pytest_cache/
-.mypy_cache/
+.eggs/
+dist/
+build/
 
-# Hermes 技能库自动入脑产物（机器本地）
-data/hft_skill_brain_digest.json
-
-# 运行期大文件 / 日志（恢复代码时不必跟这些数据绑死）
-logs/
+# Runtime / local state
 *.log
-nohup.out
-trade_memory.json
+server.pid
 live_trading_state.json
-outputs/*
-!outputs/env/
-!outputs/env/requirements_lock_*.txt
+trade_memory.json
+bayes_beta_state.json
+memos_v316_hook.json
+.memos/
+
+# Outputs & backups (large / machine-local)
+outputs/
 backups/
 *.tar.gz
+backup_*/
 
-# 参考子树（体积大；若需纳入版本可从此行删除）
-memos_ref/
-
-# IDE
+# IDE / OS
 .idea/
 .vscode/
-.cursor/*
-!.cursor/WORKSPACE_IDENTITY.txt
-!.cursor/HERMES_SESSION_RESTORE.md
-!.cursor/rules/
-!.cursor/rules/**
+.DS_Store
 
-# 进程号（本地生成）
-*.pid
+# Cursor (optional local)
+.cursor/hermes_last_session_path.txt
