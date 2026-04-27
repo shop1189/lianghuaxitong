@@ -65,10 +65,14 @@ def _collect_liquidations_ws(
         "n_total": 0,
         "n_watch": 0,
         "by_symbol": {},
+        "price_by_symbol": {},
+        "by_side": {"BUY": 0, "SELL": 0},
         "error": None,
     }
     t0 = time.time()
     by_sym: dict[str, int] = defaultdict(int)
+    px_by_sym: dict[str, list[float]] = defaultdict(list)
+    by_side: dict[str, int] = defaultdict(int)
     try:
         from websocket import create_connection
 
@@ -91,9 +95,19 @@ def _collect_liquidations_ws(
                     continue
                 o = data.get("o") or {}
                 sym = str(o.get("s") or "").upper()
+                side = str(o.get("S") or "").upper()
+                if side in ("BUY", "SELL"):
+                    by_side[side] += 1
+                ap = o.get("ap") or o.get("p")
+                try:
+                    apf = float(ap)
+                except (TypeError, ValueError):
+                    apf = 0.0
                 if sym in _WATCH:
                     by_sym[sym] += 1
                     out["n_watch"] += 1
+                    if apf > 0:
+                        px_by_sym[sym].append(apf)
         finally:
             try:
                 ws.close()
@@ -102,6 +116,16 @@ def _collect_liquidations_ws(
     except Exception as e:
         out["error"] = str(e)[:220]
     out["by_symbol"] = dict(by_sym)
+    out["by_side"] = {"BUY": int(by_side.get("BUY", 0)), "SELL": int(by_side.get("SELL", 0))}
+    out["price_by_symbol"] = {
+        k: {
+            "n": len(v),
+            "min": min(v) if v else None,
+            "max": max(v) if v else None,
+            "last": (v[-1] if v else None),
+        }
+        for k, v in px_by_sym.items()
+    }
     return out
 
 
@@ -165,6 +189,7 @@ def get_binance_context_for_ccxt_symbol(ccxt_symbol: str) -> Dict[str, Any]:
         "liq_total_msgs": int(liq.get("n_total") or 0),
         "liq_watch_msgs": int(liq.get("n_watch") or 0),
         "liq_error": liq.get("error"),
+        "liq_price_band": "—",
     }
     trend_suffix = ""
     if not bn_sym:
@@ -198,6 +223,12 @@ def get_binance_context_for_ccxt_symbol(ccxt_symbol: str) -> Dict[str, Any]:
 
     liq_n = int((liq.get("by_symbol") or {}).get(bn_sym) or 0)
     panel["liq_hits_in_sample"] = liq_n
+    liq_band = (liq.get("price_by_symbol") or {}).get(bn_sym) if isinstance(liq.get("price_by_symbol"), dict) else None
+    if isinstance(liq_band, dict) and liq_band.get("min") is not None and liq_band.get("max") is not None:
+        try:
+            panel["liq_price_band"] = f"{float(liq_band.get('min')):.4f} ~ {float(liq_band.get('max')):.4f}"
+        except (TypeError, ValueError):
+            panel["liq_price_band"] = "—"
 
     parts: List[str] = []
     if bp is not None and abs(bp) >= 0.01:
@@ -313,5 +344,6 @@ def binance_metrics_html_rows(ccxt_symbol: str) -> str:
 <tr><td>币安 · 标记相对指数基差</td><td>{esc(p.get('basis_mark_vs_index_pct'))}</td></tr>
 <tr><td>币安 · 持仓量 OI</td><td>{esc(p.get('open_interest'))}</td></tr>
 <tr><td>币安 · 强平事件采样（当前币对）</td><td>窗内命中 {esc(p.get('liq_hits_in_sample'))} 笔 · {liq_note}</td></tr>
+<tr><td>币安 · 强平价格带样本（当前币对）</td><td>{esc(p.get('liq_price_band'))}</td></tr>
 """
     return rows.strip()

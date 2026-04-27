@@ -1,6 +1,0 @@
-# V3.18.0：追加 CCXT 作为统一行情层（Gate.io）。若本文件已包含其它依赖，请合并而非覆盖。
-ccxt>=4.0.0
-pandas>=2.0.0
-pandas-ta>=0.3.14
-psutil>=5.9.0
-python-dotenv>=1.0.0

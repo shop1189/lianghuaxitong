@@ -2018,7 +2018,10 @@ pre{{white-space:pre-wrap;font-size:0.88rem;}}
 
 
 @app.get("/decision", response_class=HTMLResponse)
-async def page_decision(symbol: str = Query("SOL/USDT")):
+async def page_decision(
+    symbol: str = Query("SOL/USDT"),
+    coach_mode: str = Query("live"),
+):
     sym = _pick_symbol(symbol)
     snap = build_indicator_snapshot(sym, 500)
     km = get_v313_decision_snapshot(force_refresh=True, symbol=sym)
@@ -2098,6 +2101,35 @@ async def page_decision(symbol: str = Query("SOL/USDT")):
         third_party_metrics_rows = third_party_metrics_html_rows(sym)
     except Exception:
         third_party_metrics_rows = ""
+    try:
+        mr = km.get("market_reference") if isinstance(km.get("market_reference"), dict) else {}
+        c1h = mr.get("cycle_1h") if isinstance(mr.get("cycle_1h"), dict) else {}
+        c4h = mr.get("cycle_4h") if isinstance(mr.get("cycle_4h"), dict) else {}
+        c1d = mr.get("cycle_1d") if isinstance(mr.get("cycle_1d"), dict) else {}
+        bb = mr.get("bb_15m") if isinstance(mr.get("bb_15m"), dict) else {}
+        ls = mr.get("long_short_global") if isinstance(mr.get("long_short_global"), dict) else {}
+
+        def _fmt_num(v, nd=2):
+            try:
+                return f"{float(v):.{nd}f}"
+            except Exception:
+                return "—"
+
+        market_ref_rows = f"""
+<tr><td colspan="2" style="padding-top:10px;border-top:1px solid rgba(255,255,255,.12)"><strong>主要指标参考（多周期/短线/结构资金）</strong></td></tr>
+<tr><td>1小时趋势（ADX/MACD动能/结构高点）</td><td>{html.escape(str(c1h.get('trend') or '—'))} · ADX {_fmt_num(c1h.get('adx'))} · MACD柱{html.escape(str(c1h.get('macd_strength') or '—'))} · 区间高 {_fmt_num(c1h.get('breakout_high'),1)}</td></tr>
+<tr><td>4小时趋势（ADX/MACD动能/结构高点）</td><td>{html.escape(str(c4h.get('trend') or '—'))} · ADX {_fmt_num(c4h.get('adx'))} · MACD柱{html.escape(str(c4h.get('macd_strength') or '—'))} · 区间高 {_fmt_num(c4h.get('breakout_high'),1)}</td></tr>
+<tr><td>日线趋势（ADX/MACD动能/确认位）</td><td>{html.escape(str(c1d.get('trend') or '—'))} · ADX {_fmt_num(c1d.get('adx'))} · MACD柱{html.escape(str(c1d.get('macd_strength') or '—'))} · 近期高 {_fmt_num(c1d.get('breakout_high'),1)}</td></tr>
+<tr><td>短线震荡信号（RSI5m/ATR5m）</td><td>RSI(5m) {_fmt_num(mr.get('rsi_5m'))} · ATR(5m) {_fmt_num(mr.get('atr_5m'))}</td></tr>
+<tr><td>布林/量能（15m/5m）</td><td>布林15m 下 {_fmt_num(bb.get('low'),1)} / 中 {_fmt_num(bb.get('mid'),1)} / 上 {_fmt_num(bb.get('up'),1)} · {html.escape(str(bb.get('touch') or '—'))} · 5m量能比 {_fmt_num(mr.get('vol_5m_ratio'))}</td></tr>
+<tr><td>形态检测（1h/4h）</td><td>1h: {html.escape(str(mr.get('shape_1h') or '—'))} · 4h: {html.escape(str(mr.get('shape_4h') or '—'))}</td></tr>
+<tr><td>关键斐波水平（当前）</td><td>{html.escape(json_dumps_safe(km.get('fib_levels') or {}))}</td></tr>
+<tr><td>市场结构与资金流</td><td>全市场多空比 {_fmt_num(ls.get('long'))}/{_fmt_num(ls.get('short'))} · 爆仓点分布 {html.escape(str(mr.get('liq_large_points') or '—'))}</td></tr>
+"""
+    except Exception:
+        market_ref_rows = ""
+    confidence_text = _data_confidence_line(km)
+    signal_card_text = _operator_signal_card_line(km, coach_mode)
 
     body = f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"/>
@@ -2250,6 +2282,7 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <tr><td>决策说明 · 概率</td><td>{html.escape(_zh_decision_copy(km.get("prob_model_line")))}</td></tr>
 <tr><td>能力引擎 · 一致性评分</td><td>{html.escape(str(km.get("consistency_score", "—")))}</td></tr>
 <tr><td>能力引擎 · 币安永续微调（已并入一致性分）</td><td>{html.escape(json_dumps_safe(km.get("binance_score_nudge") or {}))}</td></tr>
+<tr><td>能力引擎 · Coinglass微调（已并入一致性分）</td><td>{html.escape(json_dumps_safe(km.get("coinglass_score_nudge") or {}))}</td></tr>
 <tr><td>能力引擎 · 贝叶斯后验胜率</td><td>{html.escape(str(km.get("bayes_posterior_winrate", "—")))}</td></tr>
 <tr><td>能力引擎 · RSI(1m)</td><td>{html.escape(str(km.get("rsi_1m", "—")))}</td></tr>
 <tr><td>能力引擎 · 形态识别（条数）</td><td>{html.escape(str(len(km.get("pattern_list") or [])))} 条</td></tr>
@@ -2260,6 +2293,8 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <tr><td>书本提示（五书节选 + Hermes · 参考）</td><td>{html.escape(_zh_decision_copy(km.get("theory_book_hints_text")))}</td></tr>
 <tr><td>Hermes 技能库（已入脑节选 · 参考）</td><td>{html.escape(_hft_brain_row(km))}</td></tr>
 <tr><td>趋势状态</td><td>{html.escape(_zh_decision_copy(km.get("trend_status")))}</td></tr>
+<tr><td>指标可信度分级</td><td>{html.escape(confidence_text)}</td></tr>
+<tr><td>实操信号卡（模式）</td><td>{html.escape(signal_card_text)}</td></tr>
 <tr><td>行情状态（Markov）</td><td>{html.escape(_zh_decision_copy(km.get("markov_regime_line") or "—"))}</td></tr>
 <tr><td>主观察池·回调防护</td><td>active={html.escape(str(km.get("main_pullback_active", "—")))} · deep={html.escape(str(km.get("main_pullback_deep", "—")))} · dir={html.escape(str(km.get("main_pullback_direction", "—")))} · {html.escape(_zh_decision_copy(km.get("main_pullback_reason") or "—"))}</td></tr>
 <tr><td>主观察池·机械触发（观察）</td><td>mode={html.escape(str(km.get("main_breakout_mode", "—")))} · dir={html.escape(str(km.get("main_breakout_direction", "—")))} · {html.escape(_zh_decision_copy(km.get("main_breakout_reason") or "—"))}</td></tr>
@@ -2274,6 +2309,7 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <tr><td>K 线拉取实现</td><td>{html.escape(klines_impl_line)}</td></tr>
 {binance_metrics_rows}
 {third_party_metrics_rows}
+{market_ref_rows}
 </table></div>
 
 <div class="card green">
@@ -2349,6 +2385,81 @@ def json_dumps_safe(obj) -> str:
         return json.dumps(obj, ensure_ascii=False, indent=2)
     except Exception:
         return str(obj)
+
+
+def _data_confidence_line(km: dict) -> str:
+    """多源快照可信度：可信 / 一般 / 谨慎。"""
+    reasons: List[str] = []
+    score = 2  # 2=可信, 1=一般, 0=谨慎
+
+    bn = km.get("binance_reference") if isinstance(km.get("binance_reference"), dict) else {}
+    cg_pack = (
+        km.get("third_party_reference") if isinstance(km.get("third_party_reference"), dict) else {}
+    )
+    cg = cg_pack.get("coinglass") if isinstance(cg_pack.get("coinglass"), dict) else {}
+
+    try:
+        age = float(bn.get("cache_age_sec") or 999.0)
+    except Exception:
+        age = 999.0
+    if age > 180:
+        score = min(score, 0)
+        reasons.append("币安参考缓存偏旧")
+    elif age > 90:
+        score = min(score, 1)
+        reasons.append("币安参考略旧")
+
+    if bn.get("liq_error"):
+        score = min(score, 1)
+        reasons.append("强平采样不稳定")
+    if cg.get("enabled") and not cg.get("ok"):
+        score = min(score, 1)
+        reasons.append("Coinglass部分指标不可用")
+
+    sig = str(km.get("signal_label") or "无")
+    c = float(km.get("consistency_score") or 0.0)
+    if sig == "无" and abs(c) < 0.25:
+        score = min(score, 1)
+        reasons.append("当前边际优势较弱")
+
+    level = "可信" if score >= 2 else ("一般" if score == 1 else "谨慎")
+    tail = "；".join(reasons[:3]) if reasons else "多源一致性良好"
+    return f"{level}｜{tail}"
+
+
+def _operator_signal_card_line(km: dict, coach_mode: str) -> str:
+    """起号/实盘/喊单三档卡片，给真人执行用。"""
+    mode = (coach_mode or "live").strip().lower()
+    mode_map = {"starter": "起号", "live": "实盘", "call": "喊单"}
+    mode_zh = mode_map.get(mode, "实盘")
+
+    sig = str(km.get("signal_label") or "无")
+    if sig.startswith("偏多"):
+        side = "做多"
+    elif sig.startswith("偏空"):
+        side = "做空"
+    else:
+        side = "观望"
+    e = km.get("entry_price")
+    sl = km.get("sl_price")
+    tp1 = km.get("tp1_price")
+    c = float(km.get("consistency_score") or 0.0)
+    prob_up = float(km.get("prob_up_5m") or 50.0)
+    prob_down = float(km.get("prob_down_5m") or 50.0)
+    edge = abs(prob_up - prob_down)
+
+    if mode == "starter":
+        ok = abs(c) >= 0.50 and edge >= 8 and "强" in sig
+    elif mode == "call":
+        ok = abs(c) >= 0.35 and edge >= 4 and side != "观望"
+    else:
+        ok = abs(c) >= 0.42 and edge >= 6 and side != "观望"
+    action = "执行" if ok else "观望"
+    invalid = "价格有效跌破SL/升破SL即失效（按方向）"
+    return (
+        f"{mode_zh}｜建议={action} {side}｜入场 {e}｜SL {sl}｜TP1 {tp1}"
+        f"｜分数 {c:+.3f}｜边际 {edge:.1f}｜失效条件：{invalid}"
+    )
 
 
 def _copytrade_side(km: dict) -> str:

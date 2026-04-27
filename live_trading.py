@@ -1729,6 +1729,9 @@ def get_v313_decision_snapshot(
     snap = build_indicator_snapshot(symbol, 500)
     bn_ctx_for_merge: Optional[Dict[str, Any]] = None
     bn_score_nudge_meta: Dict[str, Any] = {}
+    coinglass_bundle: Dict[str, Any] = {}
+    coinglass_score_nudge_meta: Dict[str, Any] = {}
+    market_reference: Dict[str, Any] = {}
     klines: List[Dict[str, Any]] = snap.get("klines") or []
     state = _state_slice_for_symbol(_load_state(), symbol)
     closes = [float(k["close"]) for k in klines]
@@ -1817,6 +1820,28 @@ def get_v313_decision_snapshot(
                     )
         except Exception:
             pass
+    try:
+        from data.third_party_reference import (
+            apply_coinglass_score_nudge,
+            get_third_party_cached,
+        )
+
+        coinglass_bundle = get_third_party_cached(symbol)
+        cg = coinglass_bundle.get("coinglass") if isinstance(coinglass_bundle, dict) else {}
+        score, coinglass_score_nudge_meta = apply_coinglass_score_nudge(score, cg if isinstance(cg, dict) else {})
+        score = max(-1.0, min(1.0, score))
+        cnotes = coinglass_score_nudge_meta.get("notes") or []
+        if cnotes:
+            technical_indicators = technical_indicators + " | Coinglass微调：" + "；".join(cnotes)
+    except Exception:
+        pass
+    try:
+        from data.market_reference_panel import get_market_reference
+
+        cg = coinglass_bundle.get("coinglass") if isinstance(coinglass_bundle, dict) else {}
+        market_reference = get_market_reference(symbol, cg if isinstance(cg, dict) else None)
+    except Exception:
+        market_reference = {}
     post = beta_update_from_score_throttled(score)
     sig_label = _sig_label_from_rsi_t5(rsi_1m, t5)
     if score >= 0.45 and sig_label.startswith("偏多"):
@@ -2045,7 +2070,9 @@ def get_v313_decision_snapshot(
         "binance_reference": bn_panel,
         "binance_reference_raw": bn_raw,
         "binance_score_nudge": bn_score_nudge_meta,
-        **(_third_party_snapshot(symbol)),
+        "coinglass_score_nudge": coinglass_score_nudge_meta,
+        "market_reference": market_reference,
+        **(coinglass_bundle if coinglass_bundle else _third_party_snapshot(symbol)),
         **ekm,
         **brain_meta,
     }

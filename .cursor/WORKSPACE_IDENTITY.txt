@@ -1,7 +1,0 @@
-longxia_system 工作区身份（先读本文件，再按需展开）
-
-整库入口索引：仓库根目录 README.md
-详细 Cursor 规则（身份、交易记忆写盘约束等）：.cursor/rules/
-Hermes 会话恢复：.cursor/HERMES_SESSION_RESTORE.md
-
-说明：Hermes 自动化若在另一目录，可另开独立工作区（勿与本仓库混为同一根目录）。
