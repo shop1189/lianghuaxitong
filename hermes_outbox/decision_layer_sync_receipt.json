@@ -1,0 +1,29 @@
+{
+  "sync_time_utc": "2026-04-27T09:04:39Z",
+  "sync_items": {
+    "decision_page": [
+      "币安参考",
+      "第三方与签名接口行"
+    ],
+    "decision_logic": [
+      "Coinglass score nudge（短线）"
+    ],
+    "port_convention": "8080"
+  },
+  "version_tag": "nousresearch/hermes-agent:latest | [\"gateway\",\"run\"] [\"/opt/hermes/docker/entrypoint.sh\"]",
+  "health_status": {
+    "data_health": "green",
+    "model_health": "green",
+    "data_generated_at_utc": "2026-04-27T09:03:58Z",
+    "model_run_at_utc": "2026-04-27T09:01:57Z"
+  },
+  "alerts": [
+    "8080 未监听（当前为 Telegram polling 网关模式，按运行约定登记为非阻断）"
+  ],
+  "third_party_log_excerpt": "",
+  "suggestions": [
+    "保持 cron_guard 前置脚本启用，防止配置与技能文件再次丢失",
+    "若需严格满足 8080 在线探活，请单独启用 HTTP health endpoint 服务并绑定 8080",
+    "第三方 403/404 继续按非阻断告警处理，主链路依赖不受影响"
+  ]
+}

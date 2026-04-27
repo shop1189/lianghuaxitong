@@ -1,0 +1,22 @@
+{
+  "checked_at_utc": "2026-04-27T15:55:01.348707+00:00",
+  "ok": false,
+  "missing_files": [],
+  "changed_files": [
+    {
+      "path": "main.py",
+      "expected_size": 115111,
+      "current_size": 124200,
+      "expected_sha256": "41281b20ce6dcb9c8c2677ab1d649f9ec00a3b64d26abf153ff9930a150509bc",
+      "current_sha256": "80dd6a1802d482efea1563c47183b727a356d0dfde4af796dd99dd07c2352ba9"
+    },
+    {
+      "path": "live_trading.py",
+      "expected_size": 84178,
+      "current_size": 87446,
+      "expected_sha256": "59ebfd54307472f80b28549aa02d3f27df22bc3be2eb765bb45bb9d1f167273a",
+      "current_sha256": "729edda4661b4a1ea3c531687a00b352c2edee6e4e9ca2bb481c3a48a0719901"
+    }
+  ],
+  "baseline_path": "/root/longxia_system/logs/critical_files_baseline.json"
+}

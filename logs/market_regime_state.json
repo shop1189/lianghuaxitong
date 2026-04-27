@@ -1,0 +1,21 @@
+{
+  "last_regime": "chop",
+  "transitions": {
+    "chop": {
+      "chop": 71342,
+      "mid": 0,
+      "trend": 0
+    },
+    "mid": {
+      "chop": 0,
+      "mid": 0,
+      "trend": 0
+    },
+    "trend": {
+      "chop": 0,
+      "mid": 0,
+      "trend": 0
+    }
+  },
+  "steps": 71342
+}

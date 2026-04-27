@@ -1,0 +1,64 @@
+{
+  "generated_at_utc": "2026-04-23T12:15:47.626419+00:00",
+  "repo_root": "/root/longxia_system",
+  "files_total": 11,
+  "files_present": 11,
+  "files_missing": [],
+  "fingerprints": {
+    "main.py": {
+      "path": "main.py",
+      "size": 115111,
+      "sha256": "41281b20ce6dcb9c8c2677ab1d649f9ec00a3b64d26abf153ff9930a150509bc"
+    },
+    "live_trading.py": {
+      "path": "live_trading.py",
+      "size": 84178,
+      "sha256": "59ebfd54307472f80b28549aa02d3f27df22bc3be2eb765bb45bb9d1f167273a"
+    },
+    "data_fetcher.py": {
+      "path": "data_fetcher.py",
+      "size": 2196,
+      "sha256": "482804dd4028c405a0062b0d3b713796f9a28b28ee7babcbd0a59ad5f0f617b5"
+    },
+    "data/fetcher.py": {
+      "path": "data/fetcher.py",
+      "size": 3794,
+      "sha256": "483a312aa931161f5619270cc9f52f9f2b78788cd966efda82a43f43fc4b1ad2"
+    },
+    "evolution_core.py": {
+      "path": "evolution_core.py",
+      "size": 14922,
+      "sha256": "252d96b3d2840606f25ec0c84f36b432ae7d3a6833b66f48300d8375cd0a8405"
+    },
+    "utils/trade_exit_rules.py": {
+      "path": "utils/trade_exit_rules.py",
+      "size": 4479,
+      "sha256": "627475cfb437ff7d6b4bfe455dc26e8a23b005735bcfdfcab2f511dfbe57641e"
+    },
+    "utils/experiment_risk_state.py": {
+      "path": "utils/experiment_risk_state.py",
+      "size": 4224,
+      "sha256": "4f1050d546016d836b31adda6844c89c1a41f395392584701e5eb7b02c0f34c8"
+    },
+    "utils/experiment_track_filters.py": {
+      "path": "utils/experiment_track_filters.py",
+      "size": 3453,
+      "sha256": "f58f9c1d63a22f59f3ad68f9ebedaee0e20700176ac10364ac3704798cf75adc"
+    },
+    "scripts/run_daily_review.sh": {
+      "path": "scripts/run_daily_review.sh",
+      "size": 167,
+      "sha256": "cef7bb8c459f6b9654cd43e03670302cb474ab1bcf3cf08747be22c0aa251c83"
+    },
+    "scripts/run_backtest_autotask.sh": {
+      "path": "scripts/run_backtest_autotask.sh",
+      "size": 2171,
+      "sha256": "70f951a0d8e2f80b050f63324909d5226e84638c834e470e4f4a499655a8ce2b"
+    },
+    "scripts/github_bidirectional_sync.sh": {
+      "path": "scripts/github_bidirectional_sync.sh",
+      "size": 2938,
+      "sha256": "21054024dd345eeadcbd1304cfca3c60a74953ddbbd8bff90fc5ecc304ea12ca"
+    }
+  }
+}

@@ -523,13 +523,21 @@ def _memo_cal_day_bj(r: dict) -> Optional[str]:
 
 def _memos_reflect_bar_html() -> str:
     """首页靠前展示：换日说明 + 反思建议（与下方 memos 统计同源）。"""
+    def _is_experiment_row(r: dict) -> bool:
+        if not isinstance(r, dict):
+            return False
+        # 历史数据存在“实验轨也被写成 virtual_signal=True”的遗留口径；
+        # 通过结构化平仓原因兜底识别实验轨，避免前台长期显示样本不足。
+        cr = str(r.get("close_reason") or "").lower()
+        if "structure_exit:" in cr:
+            return True
+        if r.get("virtual_signal") is False:
+            return True
+        return False
+
     try:
         trades = _load_trades_flat()
-        exp_closed = [
-            r
-            for r in trades
-            if not r.get("virtual_signal") and r.get("profit") is not None
-        ]
+        exp_closed = [r for r in trades if _is_experiment_row(r) and r.get("profit") is not None]
         text = _reflection_experiment(exp_closed)
     except Exception:
         text = "【规则实验轨】反思建议加载失败。"
@@ -544,8 +552,18 @@ def _memos_reflect_bar_html() -> str:
 
 def _memos_evolution_full_html(trades: list[dict], today_bj: str) -> str:
     """第二次改版：反思置顶 + 双轨指标 + 仅当日宽表 + 脚注（不附带原始 JSON 块）。"""
-    exp = [r for r in trades if not r.get("virtual_signal")]
-    vir = [r for r in trades if r.get("virtual_signal")]
+    def _is_experiment_row(r: dict) -> bool:
+        if not isinstance(r, dict):
+            return False
+        cr = str(r.get("close_reason") or "").lower()
+        if "structure_exit:" in cr:
+            return True
+        if r.get("virtual_signal") is False:
+            return True
+        return False
+
+    exp = [r for r in trades if _is_experiment_row(r)]
+    vir = [r for r in trades if not _is_experiment_row(r)]
     exp_closed = [r for r in exp if r.get("profit") is not None]
     vir_closed = [r for r in vir if r.get("profit") is not None]
     vir_open = [r for r in vir if r.get("profit") is None]
@@ -1077,6 +1095,16 @@ def _fmt_klines_impl_line(snap: dict, meta: dict) -> str:
 
 def _hft_brain_row(km: dict) -> str:
     """Hermes 技能库节选入脑状态（仅展示，不下单）。"""
+    from pathlib import Path
+
+    def _fmt_utc(ts: float) -> str:
+        try:
+            if ts <= 0:
+                return "—"
+            return datetime.fromtimestamp(float(ts), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            return "—"
+
     try:
         n = int(km.get("hft_skill_brain_line_count") or 0)
     except Exception:
@@ -1088,7 +1116,23 @@ def _hft_brain_row(km: dict) -> str:
         return "尚未入脑：请先运行 scripts/hft_skill_auto_ingest.py（或配置每日 cron）"
     short_sha = f"{sha[:12]}…" if len(sha) >= 12 else (sha or "—")
     pv = (prev[:160] + "…") if len(prev) > 160 else prev
-    return f"节选 {n} 条 · sha256 {short_sha} · 入脑时间 {ing or '—'} · 预览：{pv or '—'}"
+    src_meta = Path(__file__).resolve().parent / "hermes_outbox" / "hft_strategy_skill_library.meta.json"
+    src_md = Path(__file__).resolve().parent / "hermes_outbox" / "hft_strategy_skill_library.md"
+    src_meta_ts = _fmt_utc(src_meta.stat().st_mtime) if src_meta.exists() else "—"
+    src_md_ts = _fmt_utc(src_md.stat().st_mtime) if src_md.exists() else "—"
+    source_hint = f"源meta更新 {src_meta_ts} · 源md更新 {src_md_ts}"
+    if ing and src_meta.exists():
+        try:
+            ing_dt = datetime.strptime(ing, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            if src_meta.stat().st_mtime <= ing_dt.timestamp() + 1:
+                source_hint += " · 源未变化（无需重入脑）"
+            else:
+                source_hint += " · 检测到源更新（建议重跑入脑）"
+        except Exception:
+            pass
+    return (
+        f"节选 {n} 条 · sha256 {short_sha} · 入脑时间 {ing or '—'} · {source_hint} · 预览：{pv or '—'}"
+    )
 
 
 def _build_v314_signal_block(
@@ -2098,6 +2142,8 @@ async def page_decision(symbol: str = Query("SOL/USDT")):
         third_party_metrics_rows = third_party_metrics_html_rows(sym)
     except Exception:
         third_party_metrics_rows = ""
+    confidence_text = _data_confidence_line(km)
+    signal_card_text = _operator_signal_card_line(km, "live")
 
     body = f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"/>
@@ -2249,6 +2295,8 @@ code {{ color: #a5d8ff; font-size: 0.85em; }}
 <tr><td>决策说明 · 技术</td><td>{html.escape(_zh_decision_copy(km.get("technical_indicators")))}</td></tr>
 <tr><td>决策说明 · 概率</td><td>{html.escape(_zh_decision_copy(km.get("prob_model_line")))}</td></tr>
 <tr><td>能力引擎 · 一致性评分</td><td>{html.escape(str(km.get("consistency_score", "—")))}</td></tr>
+<tr><td>指标可信度分级</td><td>{html.escape(confidence_text)}</td></tr>
+<tr><td>实操信号卡（模式）</td><td>{html.escape(signal_card_text)}</td></tr>
 <tr><td>能力引擎 · 币安永续微调（已并入一致性分）</td><td>{html.escape(json_dumps_safe(km.get("binance_score_nudge") or {}))}</td></tr>
 <tr><td>能力引擎 · 贝叶斯后验胜率</td><td>{html.escape(str(km.get("bayes_posterior_winrate", "—")))}</td></tr>
 <tr><td>能力引擎 · RSI(1m)</td><td>{html.escape(str(km.get("rsi_1m", "—")))}</td></tr>
@@ -2444,6 +2492,39 @@ def _copytrade_position_mgmt_html(km: dict, px: Optional[float]) -> str:
     return "<p style=\"line-height:1.75;margin:0\">" + "<br/>".join(lines) + "</p>"
 
 
+def _data_confidence_line(km: dict) -> str:
+    score = float(km.get("consistency_score") or 0.0)
+    if abs(score) >= 0.65:
+        grade = "可信"
+    elif abs(score) >= 0.35:
+        grade = "一般"
+    else:
+        grade = "谨慎"
+    return f"{grade}（一致性分 {score:+.2f}）"
+
+
+def _operator_signal_card_line(km: dict, coach_mode: str) -> str:
+    side = _copytrade_side(km)
+    signal = str(km.get("signal_label") or "无")
+    raw_prob = float(km.get("prob_up_5m") or 0.0)
+    # 兼容两种口径：0~1 概率值 或 0~100 百分值，避免出现 5250% 这类千倍显示错误。
+    prob = raw_prob * 100.0 if raw_prob <= 1.0 else raw_prob
+    prob = max(0.0, min(100.0, prob))
+    score = float(km.get("consistency_score") or 0.0)
+    edge = abs(prob - 50.0)
+    side_text = side if side != "—" else "观望"
+    if coach_mode == "starter":
+        gate = "强过滤"
+    elif coach_mode == "live":
+        gate = "平衡过滤"
+    else:
+        gate = "机会优先"
+    return (
+        f"{gate}｜方向:{side_text}｜信号:{signal}｜上涨概率:{prob:.1f}%｜"
+        f"一致性:{score:+.2f}｜概率边际:{edge:.1f}%"
+    )
+
+
 @app.get("/copytrade/", include_in_schema=False)
 def page_copytrade_redirect_slash():
     """部分反代/浏览器访问 /copytrade/ 时 404，统一跳转到无尾斜杠。"""
@@ -2504,6 +2585,8 @@ async def page_copytrade(symbol: str = Query("SOL/USDT")):
 
     mk = html.escape(_zh_decision_copy(km.get("markov_regime_line") or "—"))
     tpl = html.escape(_zh_decision_copy(km.get("experiment_markov_template_line") or "—"))
+    confidence = _data_confidence_line(km)
+    signal_card = _operator_signal_card_line(km, "call")
 
     pos_html = _copytrade_position_mgmt_html(km, px)
     px_s = fmt_price(px) if px is not None else "—"
@@ -2535,16 +2618,16 @@ a{{color:#7c9cff;}}
 <div class="copytrade-page">
 {_top_entry_strip("copytrade", sym)}
 {_memos_banner_html()}
-<h1>跟单简版</h1>
+<h1>跟单简版（喊单）</h1>
 <p class="muted" style="margin:0 0 8px">币种切换（与决策页同源）</p>
 <p style="margin:0 0 14px">{nav_ct_html}</p>
 <p class="muted" style="margin-bottom:14px">新基线说明：净口径统计建议以<strong>当前阶段起</strong>自行记日；历史完整样本仍在 <code>trade_memory.json</code> / 回测输出中可查，未删除。</p>
 <div class="card">
-<h2>信号与建议</h2>
+<h2>实时执行卡（精简）</h2>
 <table class="simple">
 <tr><td>当前信号</td><td><b>{sig}</b></td></tr>
-<tr><td>参考方向</td><td><b>{html.escape(side)}</b>（与系统快照价位方向一致）</td></tr>
-<tr><td>说明</td><td>{html.escape(adv)}</td></tr>
+<tr><td>可信度</td><td>{html.escape(confidence)}</td></tr>
+<tr><td>执行建议</td><td>{html.escape(signal_card)}</td></tr>
 </table>
 </div>
 <div class="card">
@@ -2563,19 +2646,116 @@ a{{color:#7c9cff;}}
 {pos_html}
 </div>
 <div class="card">
-<h2>资金/仓位/杠杆基础层（observe）</h2>
-{_risk_advisory_html(km, "main")}
-</div>
-<div class="card">
 <h2>行情 / 模板（摘要）</h2>
 <p style="margin:0;line-height:1.65">行情（Markov）：{mk}</p>
 <p style="margin:10px 0 0;line-height:1.65">策略模板：{tpl}</p>
 </div>
 <p class="muted">风险提示：高杠杆请严格执行止损，不可重仓扛单；本页为辅助展示，非投资建议。</p>
 <p><a href="/decision?symbol={qsym}">打开完整决策页</a></p>
-<div class="muted" style="margin-top:20px;font-size:0.82rem;">约 45 秒自动刷新本页</div>
+<div class="muted" style="margin-top:20px;font-size:0.82rem;">约 15 秒自动刷新本页</div>
 <script>
-setTimeout(function(){{ window.location.href = "/copytrade?symbol={qsym}"; }}, 45000);
+setTimeout(function(){{ window.location.href = "/copytrade?symbol={qsym}"; }}, 15000);
+</script>
+</div>
+</body></html>"""
+    return HTMLResponse(content=body, headers=_HTML_NO_CACHE_HEADERS)
+
+
+async def _operator_page_simple(
+    *,
+    symbol: str,
+    mode: str,
+    title: str,
+    refresh_sec: int,
+    note: str,
+    active_key: str,
+    route_path: str,
+) -> HTMLResponse:
+    sym = _pick_symbol(symbol)
+    qsym = quote(sym, safe="")
+    km = get_v313_decision_snapshot(force_refresh=True, symbol=sym)
+    snap = build_indicator_snapshot(sym, 500)
+    last_close = snap.get("last_close")
+    try:
+        live_ticker = await fetch_current_ticker_price(sym)
+    except Exception:
+        live_ticker = None
+    px = float(live_ticker) if live_ticker is not None else None
+    if px is None and last_close is not None:
+        try:
+            px = float(last_close)
+        except Exception:
+            px = None
+    try:
+        if px is not None:
+            sync_virtual_memos_from_state(sym, float(px), decision=km)
+    except Exception:
+        pass
+
+    side = _copytrade_side(km)
+    sig = html.escape(str(km.get("signal_label") or "—"))
+    entry = km.get("entry_price")
+    sl = km.get("sl_price")
+    tp1 = km.get("tp1_price")
+    rr_line = "—"
+    if side in ("做多", "做空"):
+        try:
+            rr_line = _copytrade_rr_gross_one_line(
+                float(entry or 0), float(sl or 0), float(tp1 or 0), side
+            )
+        except Exception:
+            rr_line = "—"
+    confidence = _data_confidence_line(km)
+    signal_card = _operator_signal_card_line(km, mode)
+
+    nav_ct = []
+    for s in SYMBOL_CHOICES:
+        active = "font-weight:700;color:#ffe082;" if s == sym else "color:#9ecbff;"
+        nav_ct.append(
+            f'<a style="margin-right:12px;{active}" href="?symbol={quote(s, safe="")}">{html.escape(s)}</a>'
+        )
+    nav_ct_html = "\n".join(nav_ct)
+    px_s = fmt_price(px) if px is not None else "—"
+
+    body = f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>{html.escape(title)} · {html.escape(sym)}</title>
+<style>
+body{{margin:0;background:#0f1419;color:#e8eef7;font-family:system-ui,"PingFang SC","Microsoft YaHei",sans-serif;min-height:100vh;}}
+.copytrade-page{{max-width:680px;margin:0 auto;padding:20px 16px 40px;box-sizing:border-box;}}
+h1{{font-size:1.25rem;margin:0 0 12px;}}
+.muted{{color:#8b9bb4;font-size:0.88rem;}}
+.card{{background:#1a2332;border-radius:14px;padding:16px 18px;margin:14px 0;border:1px solid rgba(255,255,255,.08);width:100%;}}
+.card h2{{font-size:1.02rem;margin:0 0 10px;color:#a5d8ff;}}
+table.simple{{width:100%;border-collapse:collapse;font-size:0.95rem;}}
+table.simple td{{padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);}}
+table.simple td:first-child{{color:#8b9bb4;width:42%;}}
+a{{color:#7c9cff;}}
+</style></head><body>
+{_HTML_BUILD_MARKER}
+<div class="copytrade-page">
+{_top_entry_strip(active_key, sym)}
+{_memos_banner_html()}
+<h1>{html.escape(title)}</h1>
+<p class="muted">{html.escape(note)}</p>
+<p style="margin:0 0 14px">{nav_ct_html}</p>
+<div class="card">
+<h2>实时执行卡</h2>
+<table class="simple">
+<tr><td>当前信号</td><td><b>{sig}</b></td></tr>
+<tr><td>可信度</td><td>{html.escape(confidence)}</td></tr>
+<tr><td>执行建议</td><td>{html.escape(signal_card)}</td></tr>
+<tr><td>方向</td><td><b>{html.escape(side)}</b></td></tr>
+<tr><td>现价</td><td>{html.escape(px_s)} USDT</td></tr>
+<tr><td>入场 / SL / TP1</td><td>{html.escape(str(entry))} / {html.escape(str(sl))} / {html.escape(str(tp1))}</td></tr>
+<tr><td>RR（毛）</td><td>{html.escape(rr_line)}</td></tr>
+</table>
+</div>
+<p class="muted">仅供带单执行辅助，最终以下单盘面与风控纪律为准。</p>
+<div class="muted" style="margin-top:20px;font-size:0.82rem;">约 {refresh_sec} 秒自动刷新本页</div>
+<script>
+setTimeout(function(){{ window.location.href = "{route_path}?symbol={qsym}"; }}, {refresh_sec * 1000});
 </script>
 </div>
 </body></html>"""
@@ -2586,14 +2766,16 @@ setTimeout(function(){{ window.location.href = "/copytrade?symbol={qsym}"; }}, 4
 @app.get("/teacher_boost/", include_in_schema=False)
 @app.get("/teacher-boost", response_class=HTMLResponse)
 @app.get("/tb", response_class=HTMLResponse)
-def page_teacher_boost():
-    """带单老师·起号轨：内部统计页（signal_track=boost），与主观察池/实验轨数据隔离。"""
-    return _html_teacher_track_page(
-        active_strip="teacher_boost",
-        title="带单老师 · 起号轨（内部统计）",
-        signal_track=SIGNAL_TRACK_BOOST,
-        intro="业务向：冲排名、单日少量高质量单等；与交易所对外展示无关。样本需 memos 写入 signal_track=boost。",
-        kpi_note="扩展 KPI（回撤观感等）",
+async def page_teacher_boost(symbol: str = Query("SOL/USDT")):
+    """带单老师·起号：简版实时执行卡（强过滤）。"""
+    return await _operator_page_simple(
+        symbol=symbol,
+        mode="starter",
+        title="带单老师 · 起号",
+        refresh_sec=30,
+        note="起号模式：强过滤、低频高质量（默认更偏观望）。",
+        active_key="teacher_boost",
+        route_path="/teacher_boost",
     )
 
 
@@ -2601,14 +2783,16 @@ def page_teacher_boost():
 @app.get("/teacher_combat/", include_in_schema=False)
 @app.get("/teacher-combat", response_class=HTMLResponse)
 @app.get("/tc", response_class=HTMLResponse)
-def page_teacher_combat():
-    """带单老师·实战轨：内部统计页（signal_track=combat）。"""
-    return _html_teacher_track_page(
-        active_strip="teacher_combat",
-        title="带单老师 · 实操轨（内部统计）",
-        signal_track=SIGNAL_TRACK_COMBAT,
-        intro="业务向：低杠杆、中长持仓、控回撤；与交易所对外展示无关。样本需 memos 写入 signal_track=combat。",
-        kpi_note="夏普 / 最大回撤 / 均持仓时长",
+async def page_teacher_combat(symbol: str = Query("SOL/USDT")):
+    """带单老师·实盘：简版实时执行卡（平衡频率和质量）。"""
+    return await _operator_page_simple(
+        symbol=symbol,
+        mode="live",
+        title="带单老师 · 实盘",
+        refresh_sec=20,
+        note="实盘模式：平衡信号质量与机会频率。",
+        active_key="teacher_combat",
+        route_path="/teacher_combat",
     )
 
 

@@ -1,0 +1,5 @@
+- 同步时间: 2026-04-27T09:04:39Z
+- 版本标识: nousresearch/hermes-agent:latest | ["gateway","run"] ["/opt/hermes/docker/entrypoint.sh"]
+- 健康状态: data=green, model=green
+- 告警项: 8080 未监听（当前为 Telegram polling 网关模式，按运行约定登记为非阻断）
+- 处理建议: 保持 cron_guard 前置脚本启用，防止配置与技能文件再次丢失；若需严格满足 8080 在线探活，请单独启用 HTTP health endpoint 服务并绑定 8080；第三方 403/404 继续按非阻断告警处理，主链路依赖不受影响

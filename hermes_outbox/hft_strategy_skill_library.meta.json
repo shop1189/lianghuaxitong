@@ -1,8 +1,8 @@
 {
-  "exported_at_utc": "2026-04-15T01:05:01Z",
+  "exported_at_utc": "2026-04-27T15:50:01Z",
   "source_path": "/opt/hermes-stack/data-chat/skills/hft-strategy-skill-library/SKILL.md",
   "dest_path": "/opt/hermes-sync/outbox/hft_strategy_skill_library.md",
-  "bytes": 5749,
-  "sha256": "68355fbbaae8988fa12266853355d47d8b6d468f39309fd838d81d9eaa167ec5",
+  "bytes": 4043,
+  "sha256": "ed1779dc618d995fe61519b601774a8f5612318efdc593e28234a659fd9e97c6",
   "disclaimer": "Educational / reference only; not trading advice."
 }

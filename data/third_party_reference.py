@@ -50,25 +50,123 @@ def _fetch_coinglass() -> Dict[str, Any]:
     key = (os.environ.get("COINGLASS_API_KEY") or "").strip()
     if not key or len(key) < 8:
         return {"enabled": False, "summary": "未配置 COINGLASS_API_KEY"}
-    url = "https://open-api-v4.coinglass.com/api/futures/supported-coins"
-    raw, err = _http_get(
-        url, headers={"accept": "application/json", "CG-API-KEY": key}
+    headers = {"accept": "application/json", "CG-API-KEY": key}
+    coin = (os.environ.get("LONGXIA_COINGLASS_SYMBOL") or "BTC").strip().upper()
+    pair = (os.environ.get("LONGXIA_COINGLASS_PAIR") or f"{coin}USDT").strip().upper()
+    exchange = (os.environ.get("LONGXIA_COINGLASS_EXCHANGE") or "Binance").strip()
+    interval = (os.environ.get("LONGXIA_COINGLASS_INTERVAL") or "4h").strip()
+
+    def _req(path: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        raw, err = _http_get(f"https://open-api-v4.coinglass.com{path}", headers=headers)
+        if err:
+            return None, err
+        try:
+            j = json.loads((raw or b"").decode("utf-8", errors="replace"))
+            if isinstance(j, dict):
+                code = str(j.get("code") or "")
+                if code and code != "0":
+                    msg = str(j.get("msg") or "unknown")
+                    return None, f"code={code} msg={msg}"
+                return j, None
+            return {"data": j}, None
+        except Exception as ex:
+            return None, str(ex)
+
+    out: Dict[str, Any] = {"enabled": True, "ok": True}
+
+    j0, e0 = _req("/api/futures/supported-coins")
+    if e0:
+        return {"enabled": True, "ok": False, "error": e0}
+    data0 = (j0 or {}).get("data")
+    n = len(data0) if isinstance(data0, list) else "—"
+    out["summary"] = f"supported-coins 条数≈{n}"
+    out["code"] = (j0 or {}).get("code")
+
+    # 付费 key：尽量展示可实时读取的核心项；任一失败不阻断其他项。
+    # 不同套餐/端点可能返回 401/404，统一通过 notes 回显，前端可见。
+    notes = []
+
+    j1, e1 = _req(
+        f"/api/futures/funding-rate/history?symbol={pair}&exchange={exchange}&interval={interval}&limit=1"
     )
-    if err:
-        return {"enabled": True, "ok": False, "error": err}
-    try:
-        j = json.loads(raw.decode("utf-8", errors="replace"))
-    except Exception as e:
-        return {"enabled": True, "ok": False, "error": str(e)}
-    data = j.get("data") if isinstance(j, dict) else j
-    n = len(data) if isinstance(data, list) else "—"
-    ok = j.get("success", True) if isinstance(j, dict) else True
-    return {
-        "enabled": True,
-        "ok": bool(ok),
-        "summary": f"supported-coins 条数≈{n}",
-        "code": j.get("code") if isinstance(j, dict) else None,
-    }
+    if not e1 and j1:
+        d1 = j1.get("data")
+        if isinstance(d1, list) and d1:
+            last = d1[-1] if isinstance(d1[-1], dict) else {}
+            fr = (
+                last.get("fundingRate")
+                or last.get("funding_rate")
+                or last.get("close")
+            )
+            if fr is not None:
+                out["funding_rate"] = fr
+    else:
+        notes.append(f"funding:{e1}")
+
+    j2, e2 = _req(
+        f"/api/futures/open-interest/history?symbol={pair}&exchange={exchange}&interval={interval}&limit=1"
+    )
+    if not e2 and j2:
+        d2 = j2.get("data")
+        if isinstance(d2, list) and d2:
+            last = d2[-1] if isinstance(d2[-1], dict) else {}
+            oi = (
+                last.get("openInterest")
+                or last.get("open_interest")
+                or last.get("value")
+                or last.get("close")
+            )
+            if oi is not None:
+                out["open_interest"] = oi
+    else:
+        notes.append(f"oi:{e2}")
+
+    j3, e3 = _req(
+        f"/api/futures/liquidation/history?symbol={pair}&exchange={exchange}&interval={interval}&limit=1"
+    )
+    if not e3 and j3:
+        d3 = j3.get("data")
+        if isinstance(d3, list) and d3:
+            last = d3[-1] if isinstance(d3[-1], dict) else {}
+            lv = (
+                last.get("liquidation")
+                or last.get("value")
+                or last.get("sum")
+                or last.get("amount")
+                or (
+                    float(last.get("long_liquidation_usd") or 0.0)
+                    + float(last.get("short_liquidation_usd") or 0.0)
+                )
+            )
+            if lv is not None:
+                out["liquidation_1h"] = lv
+    else:
+        notes.append(f"liq:{e3}")
+
+    j4, e4 = _req(
+        f"/api/futures/global-long-short-account-ratio/history?symbol={pair}&exchange={exchange}&interval={interval}&limit=1"
+    )
+    if not e4 and j4:
+        d4 = j4.get("data")
+        if isinstance(d4, list) and d4:
+            last = d4[-1] if isinstance(d4[-1], dict) else {}
+            ls = (
+                last.get("longShortRatio")
+                or last.get("long_short_ratio")
+                or last.get("ratio")
+                or last.get("global_account_long_short_ratio")
+            )
+            if ls is not None:
+                out["global_long_short_ratio"] = ls
+    else:
+        notes.append(f"ls_ratio:{e4}")
+
+    if notes:
+        out["notes"] = notes
+    out["interval"] = interval
+    out["pair"] = pair
+    out["exchange"] = exchange
+    return out
 
 
 def _fetch_cryptoquant() -> Dict[str, Any]:
@@ -249,6 +347,21 @@ def third_party_metrics_html_rows(ccxt_symbol: str) -> str:
     def esc(s: Any) -> str:
         return _html.escape(str(s), quote=True)
 
+    def _friendly_error(err: Any) -> str:
+        s = str(err or "").strip()
+        low = s.lower()
+        if not s:
+            return "暂不可用（未返回错误详情）"
+        if "error 1010" in low or "browser_signature_banned" in low:
+            return "CryptoQuant 被 Cloudflare 拦截（1010），当前服务器指纹受限；建议改代理/IP 或改官方白名单接入。"
+        if "invalid endpoint" in low:
+            return "接口端点不可用（当前 key/套餐不支持该 LunarCrush 端点）。"
+        if "timed out" in low or "timeout" in low:
+            return "请求超时（可重试，或延长超时/降低刷新频率）。"
+        if len(s) > 180:
+            return s[:180] + "…"
+        return s
+
     b = get_third_party_cached(ccxt_symbol)
 
     def row(title: str, d: dict) -> str:
@@ -257,12 +370,40 @@ def third_party_metrics_html_rows(ccxt_symbol: str) -> str:
         if d.get("ok"):
             extra = f" · {esc(d.get('via', ''))}" if d.get("via") else ""
             return f"<tr><td>{esc(title)}</td><td>{esc(d.get('summary', '—'))}{extra}</td></tr>"
-        return f"<tr><td>{esc(title)}</td><td class=\"muted\">{esc(d.get('error', '失败'))}</td></tr>"
+        return f"<tr><td>{esc(title)}</td><td class=\"muted\">{esc(_friendly_error(d.get('error', '失败')))}</td></tr>"
+
+    enabled_cnt = 0
+    ok_cnt = 0
+    for k in ("coinglass", "cryptoquant", "lunarcrush", "binance_signed", "gate_signed"):
+        d = b.get(k) or {}
+        if d.get("enabled"):
+            enabled_cnt += 1
+            if d.get("ok"):
+                ok_cnt += 1
+    ts = float(b.get("refreshed_at") or 0.0)
+    if ts > 0:
+        age_sec = max(0.0, time.time() - ts)
+        freshness = f"缓存约 {age_sec:.1f} 秒前刷新"
+    else:
+        freshness = "缓存时间未知"
 
     block = "\n".join(
         [
-            '<tr><td colspan="2" style="padding-top:10px;border-top:1px solid rgba(255,255,255,.12)"><strong>指标参考 · 第三方与签名接口（.env 密钥）</strong></td></tr>',
+            f'<tr><td colspan="2" style="padding-top:10px;border-top:1px solid rgba(255,255,255,.12)"><strong>指标参考 · 第三方与签名接口（.env 密钥）</strong> · {esc(freshness)}</td></tr>',
+            f'<tr><td>第三方数据可用性</td><td>{esc(f"已启用 {enabled_cnt} 项 · 成功 {ok_cnt} 项 · 失败 {max(0, enabled_cnt-ok_cnt)} 项")}</td></tr>',
             row("Coinglass", b.get("coinglass") or {}),
+            (
+                f'<tr><td>Coinglass · 资金费率({esc((b.get("coinglass") or {}).get("interval", "4h"))}最近)</td><td>{esc((b.get("coinglass") or {}).get("funding_rate", "暂缺（端点或权限受限）"))}</td></tr>'
+            ),
+            (
+                f'<tr><td>Coinglass · OI({esc((b.get("coinglass") or {}).get("interval", "4h"))}最近)</td><td>{esc((b.get("coinglass") or {}).get("open_interest", "暂缺（端点或权限受限）"))}</td></tr>'
+            ),
+            (
+                f'<tr><td>Coinglass · 爆仓额({esc((b.get("coinglass") or {}).get("interval", "4h"))}最近)</td><td>{esc((b.get("coinglass") or {}).get("liquidation_1h", "暂缺（端点或权限受限）"))}</td></tr>'
+            ),
+            (
+                f'<tr><td>Coinglass · 全网多空比({esc((b.get("coinglass") or {}).get("interval", "4h"))}最近)</td><td>{esc((b.get("coinglass") or {}).get("global_long_short_ratio", "暂缺（端点或权限受限）"))}</td></tr>'
+            ),
             row("CryptoQuant", b.get("cryptoquant") or {}),
             row("LunarCrush", b.get("lunarcrush") or {}),
             row("币安合约账户（签名）", b.get("binance_signed") or {}),
