@@ -3,6 +3,8 @@
 # 用法：cron 例（北京时间 10:00 / 22:00 ≈ UTC 02:00 / 14:00，按机器时区自行调整）：
 #   0 2,14 * * * /path/to/longxia_system/scripts/daily_backtest_main_B.sh >> /path/to/longxia_system/logs/daily_backtest.log 2>&1
 set -euo pipefail
+# WSL 下若 PATH 含 Cursor 的 helpers，可能劫持 `git`；日课里的 git 用系统路径优先
+export PATH="/usr/bin:/bin:${PATH}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"

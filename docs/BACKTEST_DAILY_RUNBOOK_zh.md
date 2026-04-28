@@ -2,6 +2,10 @@
 
 云端结论摘要：代码锚点 `426e8515`；**默认快轨参数采用 B 组**（`EDGE=3`、`MIN_SCORE=0.35`、`REQUIRE_STRONG=0`）；Hermes 三 sha 已对齐；`apply_coinglass_score_nudge` 若存在占位实现，后续应在仓库统一为与线上一致的单一逻辑。
 
+## 环境提示（WSL + Cursor）
+
+若 `git commit` / `git push` 报 `option trailer requires a value` 或莫名打开 `editor`，多半是 **PATH 里 Cursor 的 `git` 包装器** 抢在 `/usr/bin/git` 之前。解决：执行 git 时临时使用 `PATH=/usr/bin:/bin`（`daily_backtest_main_B.sh` 已在开头把系统路径前置）。
+
 ## 一、固定「日课」两条线（cron）
 
 | 任务 | 频率 | 产出 | 说明 |
