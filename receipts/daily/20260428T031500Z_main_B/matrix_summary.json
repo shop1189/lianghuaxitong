@@ -1,0 +1,438 @@
+[
+  {
+    "symbol": "SOL/USDT",
+    "timeframe": "1m",
+    "limit": 1200,
+    "level_mode": "main",
+    "experiment_mode": "n/a",
+    "markov_template": "n/a",
+    "use_markov_threshold_template": false,
+    "markov_optimized": "0",
+    "entry_cooldown_bars": 3,
+    "max_hold_bars": 120,
+    "require_strong": false,
+    "total_trades": 30,
+    "wins": 19,
+    "losses": 11,
+    "win_rate_pct": 63.33,
+    "sum_profit_pct": -1.02,
+    "brackets": {
+      "sl": 11,
+      "tp1": 19
+    },
+    "coinglass_score_nudge": {
+      "delta_total": 0.0,
+      "notes": [
+        "coinglass_fields_missing_or_zero"
+      ]
+    },
+    "win_rate_gross_pct": 63.33,
+    "win_rate_net_pct": 0.0,
+    "net_win_rate": 0.0,
+    "avg_net_profit_pct": -0.194,
+    "sum_net_profit_pct": -5.82,
+    "max_drawdown_net_pct": 5.82,
+    "sharpe_net": -5.1618,
+    "trades_csv": "outputs/backtest_daily_20260428T031500Z_426e8515/20260428T031500Z_SOL-USDT_main_cd3_trades.csv"
+  },
+  {
+    "symbol": "SOL/USDT",
+    "timeframe": "1m",
+    "limit": 1200,
+    "level_mode": "main",
+    "experiment_mode": "n/a",
+    "markov_template": "n/a",
+    "use_markov_threshold_template": false,
+    "markov_optimized": "0",
+    "entry_cooldown_bars": 6,
+    "max_hold_bars": 120,
+    "require_strong": false,
+    "total_trades": 28,
+    "wins": 20,
+    "losses": 8,
+    "win_rate_pct": 71.43,
+    "sum_profit_pct": 0.0,
+    "brackets": {
+      "sl": 8,
+      "tp1": 20
+    },
+    "coinglass_score_nudge": {
+      "delta_total": 0.0,
+      "notes": [
+        "coinglass_fields_missing_or_zero"
+      ]
+    },
+    "win_rate_gross_pct": 71.43,
+    "win_rate_net_pct": 0.0,
+    "net_win_rate": 0.0,
+    "avg_net_profit_pct": -0.16,
+    "sum_net_profit_pct": -4.48,
+    "max_drawdown_net_pct": 4.48,
+    "sharpe_net": -4.3818,
+    "trades_csv": "outputs/backtest_daily_20260428T031500Z_426e8515/20260428T031500Z_SOL-USDT_main_cd6_trades.csv"
+  },
+  {
+    "symbol": "BTC/USDT",
+    "timeframe": "1m",
+    "limit": 1200,
+    "level_mode": "main",
+    "experiment_mode": "n/a",
+    "markov_template": "n/a",
+    "use_markov_threshold_template": false,
+    "markov_optimized": "0",
+    "entry_cooldown_bars": 3,
+    "max_hold_bars": 120,
+    "require_strong": false,
+    "total_trades": 22,
+    "wins": 12,
+    "losses": 10,
+    "win_rate_pct": 54.55,
+    "sum_profit_pct": -1.64,
+    "brackets": {
+      "timeout": 1,
+      "tp1": 11,
+      "sl": 10
+    },
+    "coinglass_score_nudge": {
+      "delta_total": 0.0,
+      "notes": [
+        "coinglass_fields_missing_or_zero"
+      ]
+    },
+    "win_rate_gross_pct": 54.55,
+    "win_rate_net_pct": 0.0,
+    "net_win_rate": 0.0,
+    "avg_net_profit_pct": -0.2345,
+    "sum_net_profit_pct": -5.16,
+    "max_drawdown_net_pct": 5.16,
+    "sharpe_net": -5.206,
+    "trades_csv": "outputs/backtest_daily_20260428T031500Z_426e8515/20260428T031500Z_BTC-USDT_main_cd3_trades.csv"
+  },
+  {
+    "symbol": "BTC/USDT",
+    "timeframe": "1m",
+    "limit": 1200,
+    "level_mode": "main",
+    "experiment_mode": "n/a",
+    "markov_template": "n/a",
+    "use_markov_threshold_template": false,
+    "markov_optimized": "0",
+    "entry_cooldown_bars": 6,
+    "max_hold_bars": 120,
+    "require_strong": false,
+    "total_trades": 21,
+    "wins": 14,
+    "losses": 7,
+    "win_rate_pct": 66.67,
+    "sum_profit_pct": -0.5,
+    "brackets": {
+      "timeout": 1,
+      "tp1": 13,
+      "sl": 7
+    },
+    "coinglass_score_nudge": {
+      "delta_total": 0.0,
+      "notes": [
+        "coinglass_fields_missing_or_zero"
+      ]
+    },
+    "win_rate_gross_pct": 66.67,
+    "win_rate_net_pct": 0.0,
+    "net_win_rate": 0.0,
+    "avg_net_profit_pct": -0.1838,
+    "sum_net_profit_pct": -3.86,
+    "max_drawdown_net_pct": 3.86,
+    "sharpe_net": -4.1936,
+    "trades_csv": "outputs/backtest_daily_20260428T031500Z_426e8515/20260428T031500Z_BTC-USDT_main_cd6_trades.csv"
+  },
+  {
+    "symbol": "ETH/USDT",
+    "timeframe": "1m",
+    "limit": 1200,
+    "level_mode": "main",
+    "experiment_mode": "n/a",
+    "markov_template": "n/a",
+    "use_markov_threshold_template": false,
+    "markov_optimized": "0",
+    "entry_cooldown_bars": 3,
+    "max_hold_bars": 120,
+    "require_strong": false,
+    "total_trades": 30,
+    "wins": 18,
+    "losses": 12,
+    "win_rate_pct": 60.0,
+    "sum_profit_pct": -1.44,
+    "brackets": {
+      "tp1": 18,
+      "sl": 12
+    },
+    "coinglass_score_nudge": {
+      "delta_total": 0.0,
+      "notes": [
+        "coinglass_fields_missing_or_zero"
+      ]
+    },
+    "win_rate_gross_pct": 60.0,
+    "win_rate_net_pct": 0.0,
+    "net_win_rate": 0.0,
+    "avg_net_profit_pct": -0.208,
+    "sum_net_profit_pct": -6.24,
+    "max_drawdown_net_pct": 6.24,
+    "sharpe_net": -5.4439,
+    "trades_csv": "outputs/backtest_daily_20260428T031500Z_426e8515/20260428T031500Z_ETH-USDT_main_cd3_trades.csv"
+  },
+  {
+    "symbol": "ETH/USDT",
+    "timeframe": "1m",
+    "limit": 1200,
+    "level_mode": "main",
+    "experiment_mode": "n/a",
+    "markov_template": "n/a",
+    "use_markov_threshold_template": false,
+    "markov_optimized": "0",
+    "entry_cooldown_bars": 6,
+    "max_hold_bars": 120,
+    "require_strong": false,
+    "total_trades": 28,
+    "wins": 16,
+    "losses": 12,
+    "win_rate_pct": 57.14,
+    "sum_profit_pct": -1.68,
+    "brackets": {
+      "tp1": 16,
+      "sl": 12
+    },
+    "coinglass_score_nudge": {
+      "delta_total": 0.0,
+      "notes": [
+        "coinglass_fields_missing_or_zero"
+      ]
+    },
+    "win_rate_gross_pct": 57.14,
+    "win_rate_net_pct": 0.0,
+    "net_win_rate": 0.0,
+    "avg_net_profit_pct": -0.22,
+    "sum_net_profit_pct": -6.16,
+    "max_drawdown_net_pct": 6.16,
+    "sharpe_net": -5.5,
+    "trades_csv": "outputs/backtest_daily_20260428T031500Z_426e8515/20260428T031500Z_ETH-USDT_main_cd6_trades.csv"
+  },
+  {
+    "symbol": "DOGE/USDT",
+    "timeframe": "1m",
+    "limit": 1200,
+    "level_mode": "main",
+    "experiment_mode": "n/a",
+    "markov_template": "n/a",
+    "use_markov_threshold_template": false,
+    "markov_optimized": "0",
+    "entry_cooldown_bars": 3,
+    "max_hold_bars": 120,
+    "require_strong": false,
+    "total_trades": 34,
+    "wins": 24,
+    "losses": 10,
+    "win_rate_pct": 70.59,
+    "sum_profit_pct": -0.12,
+    "brackets": {
+      "tp1": 24,
+      "sl": 10
+    },
+    "coinglass_score_nudge": {
+      "delta_total": 0.0,
+      "notes": [
+        "coinglass_fields_missing_or_zero"
+      ]
+    },
+    "win_rate_gross_pct": 70.59,
+    "win_rate_net_pct": 0.0,
+    "net_win_rate": 0.0,
+    "avg_net_profit_pct": -0.1635,
+    "sum_net_profit_pct": -5.56,
+    "max_drawdown_net_pct": 5.56,
+    "sharpe_net": -4.9088,
+    "trades_csv": "outputs/backtest_daily_20260428T031500Z_426e8515/20260428T031500Z_DOGE-USDT_main_cd3_trades.csv"
+  },
+  {
+    "symbol": "DOGE/USDT",
+    "timeframe": "1m",
+    "limit": 1200,
+    "level_mode": "main",
+    "experiment_mode": "n/a",
+    "markov_template": "n/a",
+    "use_markov_threshold_template": false,
+    "markov_optimized": "0",
+    "entry_cooldown_bars": 6,
+    "max_hold_bars": 120,
+    "require_strong": false,
+    "total_trades": 31,
+    "wins": 20,
+    "losses": 11,
+    "win_rate_pct": 64.52,
+    "sum_profit_pct": -0.9,
+    "brackets": {
+      "tp1": 20,
+      "sl": 11
+    },
+    "coinglass_score_nudge": {
+      "delta_total": 0.0,
+      "notes": [
+        "coinglass_fields_missing_or_zero"
+      ]
+    },
+    "win_rate_gross_pct": 64.52,
+    "win_rate_net_pct": 0.0,
+    "net_win_rate": 0.0,
+    "avg_net_profit_pct": -0.189,
+    "sum_net_profit_pct": -5.86,
+    "max_drawdown_net_pct": 5.86,
+    "sharpe_net": -5.1523,
+    "trades_csv": "outputs/backtest_daily_20260428T031500Z_426e8515/20260428T031500Z_DOGE-USDT_main_cd6_trades.csv"
+  },
+  {
+    "symbol": "XRP/USDT",
+    "timeframe": "1m",
+    "limit": 1200,
+    "level_mode": "main",
+    "experiment_mode": "n/a",
+    "markov_template": "n/a",
+    "use_markov_threshold_template": false,
+    "markov_optimized": "0",
+    "entry_cooldown_bars": 3,
+    "max_hold_bars": 120,
+    "require_strong": false,
+    "total_trades": 42,
+    "wins": 34,
+    "losses": 8,
+    "win_rate_pct": 80.95,
+    "sum_profit_pct": 1.68,
+    "brackets": {
+      "tp1": 34,
+      "sl": 8
+    },
+    "coinglass_score_nudge": {
+      "delta_total": 0.0,
+      "notes": [
+        "coinglass_fields_missing_or_zero"
+      ]
+    },
+    "win_rate_gross_pct": 80.95,
+    "win_rate_net_pct": 0.0,
+    "net_win_rate": 0.0,
+    "avg_net_profit_pct": -0.12,
+    "sum_net_profit_pct": -5.04,
+    "max_drawdown_net_pct": 5.04,
+    "sharpe_net": -4.659,
+    "trades_csv": "outputs/backtest_daily_20260428T031500Z_426e8515/20260428T031500Z_XRP-USDT_main_cd3_trades.csv"
+  },
+  {
+    "symbol": "XRP/USDT",
+    "timeframe": "1m",
+    "limit": 1200,
+    "level_mode": "main",
+    "experiment_mode": "n/a",
+    "markov_template": "n/a",
+    "use_markov_threshold_template": false,
+    "markov_optimized": "0",
+    "entry_cooldown_bars": 6,
+    "max_hold_bars": 120,
+    "require_strong": false,
+    "total_trades": 37,
+    "wins": 31,
+    "losses": 6,
+    "win_rate_pct": 83.78,
+    "sum_profit_pct": 1.92,
+    "brackets": {
+      "tp1": 31,
+      "sl": 6
+    },
+    "coinglass_score_nudge": {
+      "delta_total": 0.0,
+      "notes": [
+        "coinglass_fields_missing_or_zero"
+      ]
+    },
+    "win_rate_gross_pct": 83.78,
+    "win_rate_net_pct": 0.0,
+    "net_win_rate": 0.0,
+    "avg_net_profit_pct": -0.1081,
+    "sum_net_profit_pct": -4.0,
+    "max_drawdown_net_pct": 4.0,
+    "sharpe_net": -4.1899,
+    "trades_csv": "outputs/backtest_daily_20260428T031500Z_426e8515/20260428T031500Z_XRP-USDT_main_cd6_trades.csv"
+  },
+  {
+    "symbol": "BNB/USDT",
+    "timeframe": "1m",
+    "limit": 1200,
+    "level_mode": "main",
+    "experiment_mode": "n/a",
+    "markov_template": "n/a",
+    "use_markov_threshold_template": false,
+    "markov_optimized": "0",
+    "entry_cooldown_bars": 3,
+    "max_hold_bars": 120,
+    "require_strong": false,
+    "total_trades": 13,
+    "wins": 10,
+    "losses": 3,
+    "win_rate_pct": 76.92,
+    "sum_profit_pct": 0.2,
+    "brackets": {
+      "tp1": 9,
+      "sl": 3,
+      "timeout": 1
+    },
+    "coinglass_score_nudge": {
+      "delta_total": 0.0,
+      "notes": [
+        "coinglass_fields_missing_or_zero"
+      ]
+    },
+    "win_rate_gross_pct": 76.92,
+    "win_rate_net_pct": 0.0,
+    "net_win_rate": 0.0,
+    "avg_net_profit_pct": -0.1446,
+    "sum_net_profit_pct": -1.88,
+    "max_drawdown_net_pct": 1.88,
+    "sharpe_net": -2.867,
+    "trades_csv": "outputs/backtest_daily_20260428T031500Z_426e8515/20260428T031500Z_BNB-USDT_main_cd3_trades.csv"
+  },
+  {
+    "symbol": "BNB/USDT",
+    "timeframe": "1m",
+    "limit": 1200,
+    "level_mode": "main",
+    "experiment_mode": "n/a",
+    "markov_template": "n/a",
+    "use_markov_threshold_template": false,
+    "markov_optimized": "0",
+    "entry_cooldown_bars": 6,
+    "max_hold_bars": 120,
+    "require_strong": false,
+    "total_trades": 14,
+    "wins": 10,
+    "losses": 4,
+    "win_rate_pct": 71.43,
+    "sum_profit_pct": 0.24,
+    "brackets": {
+      "tp1": 10,
+      "sl": 3,
+      "timeout": 1
+    },
+    "coinglass_score_nudge": {
+      "delta_total": 0.0,
+      "notes": [
+        "coinglass_fields_missing_or_zero"
+      ]
+    },
+    "win_rate_gross_pct": 71.43,
+    "win_rate_net_pct": 0.0,
+    "net_win_rate": 0.0,
+    "avg_net_profit_pct": -0.1429,
+    "sum_net_profit_pct": -2.0,
+    "max_drawdown_net_pct": 2.0,
+    "sharpe_net": -2.9971,
+    "trades_csv": "outputs/backtest_daily_20260428T031500Z_426e8515/20260428T031500Z_BNB-USDT_main_cd6_trades.csv"
+  }
+]

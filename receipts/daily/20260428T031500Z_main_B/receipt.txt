@@ -1,0 +1,12 @@
+git_sha: 426e8515
+matrix_dir: outputs/backtest_daily_20260428T031500Z_426e8515
+level_mode: main
+symbols: SOL,BTC,ETH,DOGE,XRP,BNB
+cooldowns: cd3,cd6
+param_profile: B (EDGE=3, MIN_SCORE=0.35, REQUIRE_STRONG=0)
+sum_net_profit_pct (main cells sum): -56.06
+trade_weighted net_win_rate: 0.0
+max_drawdown_net_pct (worst main cell): 6.24
+main_sample_trades (sum total_trades): 330
+matrix_summary_json: 20260428T031500Z_matrix_summary.json
+notes: matrix ok; coinglass nudge notes 无 ImportError。
